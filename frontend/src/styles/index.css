@@ -1,0 +1,247 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   CivicPulse Design System — Dark-mode-first with glassmorphism
+   ============================================================ */
+
+:root {
+  --gradient-primary: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+  --gradient-surface: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%);
+  --glass-bg: rgba(30, 27, 75, 0.6);
+  --glass-border: rgba(99, 102, 241, 0.15);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--gradient-surface);
+  color: #e2e8f0;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ============================================================
+   Glassmorphism Components
+   ============================================================ */
+
+@layer components {
+  .glass-card {
+    @apply rounded-2xl border border-white/10 p-6;
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: var(--glass-shadow);
+    transition: all 0.3s ease;
+  }
+
+  .glass-card:hover {
+    border-color: rgba(99, 102, 241, 0.3);
+    box-shadow: 0 8px 32px rgba(99, 102, 241, 0.15);
+  }
+
+  .glass-card-static {
+    @apply rounded-2xl border border-white/10 p-6;
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: var(--glass-shadow);
+  }
+
+  .glass-input {
+    @apply w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white
+           placeholder-white/40 outline-none transition-all duration-200;
+  }
+
+  .glass-input:focus {
+    @apply border-civic-500 ring-2 ring-civic-500/20;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3
+           font-semibold text-white transition-all duration-200;
+    background: var(--gradient-primary);
+  }
+
+  .btn-primary:hover {
+    @apply shadow-lg shadow-civic-500/25 scale-[1.02];
+  }
+
+  .btn-primary:active {
+    @apply scale-[0.98];
+  }
+
+  .btn-primary:disabled {
+    @apply opacity-50 cursor-not-allowed scale-100 shadow-none;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3
+           font-semibold text-white transition-all duration-200
+           border border-white/10 bg-white/5;
+  }
+
+  .btn-secondary:hover {
+    @apply bg-white/10 border-white/20;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3
+           font-semibold text-white transition-all duration-200
+           bg-red-500/20 border border-red-500/30;
+  }
+
+  .btn-danger:hover {
+    @apply bg-red-500/30;
+  }
+
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: var(--gradient-primary);
+  }
+
+  .nav-link {
+    @apply flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+           text-white/60 transition-all duration-200;
+  }
+
+  .nav-link:hover {
+    @apply text-white bg-white/5;
+  }
+
+  .nav-link.active {
+    @apply text-white bg-civic-600/30 border border-civic-500/20;
+  }
+
+  .stat-card {
+    @apply glass-card flex flex-col items-center justify-center text-center;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+}
+
+/* ============================================================
+   Urgency Badge Colors
+   ============================================================ */
+
+.urgency-low {
+  @apply bg-emerald-500/20 text-emerald-300 border border-emerald-500/30;
+}
+
+.urgency-medium {
+  @apply bg-amber-500/20 text-amber-300 border border-amber-500/30;
+}
+
+.urgency-high {
+  @apply bg-orange-500/20 text-orange-300 border border-orange-500/30;
+}
+
+.urgency-critical {
+  @apply bg-red-500/20 text-red-300 border border-red-500/30;
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Status Badge Colors */
+.status-open {
+  @apply bg-blue-500/20 text-blue-300 border border-blue-500/30;
+}
+
+.status-assigned, .status-in_progress {
+  @apply bg-yellow-500/20 text-yellow-300 border border-yellow-500/30;
+}
+
+.status-resolved, .status-closed {
+  @apply bg-emerald-500/20 text-emerald-300 border border-emerald-500/30;
+}
+
+.status-reopened {
+  @apply bg-red-500/20 text-red-300 border border-red-500/30;
+}
+
+/* ============================================================
+   Leaflet Map Overrides (dark theme)
+   ============================================================ */
+
+.leaflet-container {
+  @apply rounded-xl;
+  background: #0f172a;
+}
+
+.leaflet-tile-pane {
+  filter: brightness(0.7) contrast(1.1) saturate(0.8);
+}
+
+.leaflet-control-zoom a {
+  @apply bg-surface-800 text-white border-white/10;
+}
+
+.leaflet-control-zoom a:hover {
+  @apply bg-surface-700;
+}
+
+.leaflet-popup-content-wrapper {
+  @apply bg-surface-800 text-white rounded-xl border border-white/10;
+}
+
+.leaflet-popup-tip {
+  background: #0f172a;
+}
+
+/* ============================================================
+   Scrollbar Styling
+   ============================================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-white/10 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-white/20;
+}
+
+/* ============================================================
+   Page Transition Animations
+   ============================================================ */
+
+.page-enter {
+  animation: fadeIn 0.4s ease-out, slideUp 0.4s ease-out;
+}
+
+/* ============================================================
+   Recording Pulse Animation (for voice recorder)
+   ============================================================ */
+
+@keyframes recording-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 12px rgba(239, 68, 68, 0);
+  }
+}
+
+.recording-active {
+  animation: recording-pulse 1.5s infinite;
+}

@@ -1,0 +1,114 @@
+# ============================================================
+# CivicPulse — .gitignore
+# Covers: Python/FastAPI backend + React/Vite frontend + misc
+# ============================================================
+
+# ── SECRETS — NEVER COMMIT ──────────────────────────────────
+.env
+.env.local
+.env.production
+.env.staging
+# Keep .env.example files (they show required keys, no values)
+!*.env.example
+!.env.example
+
+# ── PYTHON ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.Python
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.coveragerc
+
+# mypy / pyright
+.mypy_cache/
+.pyright/
+pyrightconfig.json
+
+# sentence-transformers / torch model cache
+# (large binary files, re-downloaded on first run)
+backend/.cache/
+backend/models_cache/
+*.pt
+*.pth
+*.bin
+
+# ── NODE / FRONTEND ──────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+
+# Vite build output
+frontend/dist/
+frontend/.vite/
+dist/
+*.local
+
+# npm / yarn / pnpm lock files (keep package-lock.json)
+yarn.lock
+pnpm-lock.yaml
+.yarn/
+
+# ── EDITOR & OS ──────────────────────────────────────────────
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── LOGS ─────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── UPLOADS / MEDIA ──────────────────────────────────────────
+# Local test uploads (real files go to Supabase Storage)
+uploads/
+*.webm
+*.mp4
+*.mp3
+
+# ── JUPYTER (if used for analysis) ───────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── MISC ─────────────────────────────────────────────────────
+*.tmp
+*.swp
+*.swo
+*~
+.cache/
+tmp/
