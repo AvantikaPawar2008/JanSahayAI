@@ -60,22 +60,46 @@ async def find_duplicate(
     settings = get_settings()
     supabase = get_supabase_client()
 
+    # Linear infrastructure sub-categories that can span longer distances
+    LINEAR_SUBCATEGORIES = {
+        "water_leak",
+        "no_water_supply",
+        "sewage_overflow",
+        "blocked_drain",
+        "road_damage",
+        "road_collapse",
+        "pothole",
+        "power_line_down",
+    }
+
     # ------------------------------------------------------------------
     # Stage 1 — Spatial: find nearby master tickets via PostGIS
     # ------------------------------------------------------------------
-    nearby_query = supabase.rpc(
-        "find_nearby_tickets",
-        {
+    rpc_params = {
+        "search_lat": lat,
+        "search_lng": lng,
+        "radius_m": radius_meters,
+        "search_department": department,
+        "search_sub_category": sub_category,
+    }
+    nearby_query = supabase.rpc("find_nearby_tickets", rpc_params).execute()
+
+    candidates = nearby_query.data or []
+
+    # Dynamic spatial expansion: if no candidates in 100m, allow linear defects to search up to 200m
+    if not candidates and sub_category in LINEAR_SUBCATEGORIES and radius_meters <= DEDUP_RADIUS_METERS:
+        expanded_params = {
             "search_lat": lat,
             "search_lng": lng,
-            "radius_m": radius_meters,
-        },
-    ).execute()
+            "radius_m": radius_meters * 2.0,  # 200m
+            "search_department": department,
+            "search_sub_category": sub_category,
+        }
+        expanded_query = supabase.rpc("find_nearby_tickets", expanded_params).execute()
+        candidates = expanded_query.data or []
 
-    if not nearby_query.data:
+    if not candidates:
         return None
-
-    candidates = nearby_query.data
 
     # ------------------------------------------------------------------
     # Stage 2 — Hard filter: department AND sub_category must match
@@ -100,23 +124,49 @@ async def find_duplicate(
         return None
 
     # ------------------------------------------------------------------
-    # Stage 3 — Semantic similarity: must exceed threshold
+    # Stage 3 — Semantic similarity: compare against canonical or all linked reports
     # ------------------------------------------------------------------
-    # Batch fetch the most recent report embedding for all candidates in a single query (eliminates N+1)
     candidate_ids = [ticket["id"] for ticket in candidates]
+
+    # Batch fetch all candidate reports to compare against all descriptions (eliminates recency bias)
     reports_result = (
         supabase.table("ticket_reports")
         .select("master_ticket_id, text_embedding, created_at")
         .in_("master_ticket_id", candidate_ids)
         .not_.is_("text_embedding", "null")
-        .order("created_at", desc=True)
+        .order("created_at", desc=False)
         .execute()
     )
 
-    recent_embeddings: dict[str, list[float]] = {}
+    candidate_embeddings_map: dict[str, list[list[float]]] = {cid: [] for cid in candidate_ids}
+
+    # Also check if master_tickets table already has canonical text_embedding
+    try:
+        mt_res = (
+            supabase.table("master_tickets")
+            .select("id, text_embedding")
+            .in_("id", candidate_ids)
+            .not_.is_("text_embedding", "null")
+            .execute()
+        )
+        for row in (mt_res.data or []):
+            m_id = row.get("id")
+            emb = row.get("text_embedding")
+            if m_id and emb:
+                if isinstance(emb, str):
+                    import json
+                    try:
+                        emb = json.loads(emb)
+                    except Exception:
+                        emb = None
+                if emb:
+                    candidate_embeddings_map[m_id].append(emb)
+    except Exception:
+        pass
+
     for rep in (reports_result.data or []):
         m_id = rep.get("master_ticket_id")
-        if m_id and m_id not in recent_embeddings and rep.get("text_embedding"):
+        if m_id and rep.get("text_embedding"):
             emb = rep["text_embedding"]
             if isinstance(emb, str):
                 import json
@@ -124,19 +174,25 @@ async def find_duplicate(
                     emb = json.loads(emb)
                 except Exception:
                     continue
-            recent_embeddings[m_id] = emb
+            candidate_embeddings_map.setdefault(m_id, []).append(emb)
 
     best_match = None
     best_similarity = 0.0
 
     for ticket in candidates:
         ticket_id = ticket["id"]
-        stored_embedding = recent_embeddings.get(ticket_id)
-        if not stored_embedding:
+        stored_embeddings_list = candidate_embeddings_map.get(ticket_id, [])
+        if not stored_embeddings_list:
             continue
 
-        text_similarity = compute_cosine_similarity(text_embedding, stored_embedding)
-        final_similarity = text_similarity
+        # Evaluate similarity against all available embeddings for this ticket (take highest similarity)
+        max_ticket_similarity = 0.0
+        for stored_emb in stored_embeddings_list:
+            sim = compute_cosine_similarity(text_embedding, stored_emb)
+            if sim > max_ticket_similarity:
+                max_ticket_similarity = sim
+
+        final_similarity = max_ticket_similarity
 
         threshold = settings.dedup_similarity_threshold
         if final_similarity >= threshold and final_similarity > best_similarity:
@@ -147,33 +203,31 @@ async def find_duplicate(
     return best_match
 
 
-async def increment_upvote(master_ticket_id: str) -> int:
-    """Atomically increments the upvote count on a master ticket (avoids TOCTOU race condition)."""
+async def get_ticket_upvote_count(master_ticket_id: str) -> int:
+    """
+    Returns the upvote count on a master ticket.
+    With Migration 007, upvote_count is maintained automatically by the
+    sync_ticket_upvote_count database trigger on ticket_reports.
+    """
     supabase = get_supabase_client()
-
-    # Try atomic stored procedure first
     try:
-        rpc_res = supabase.rpc(
-            "increment_ticket_upvote",
-            {"target_ticket_id": master_ticket_id}
-        ).execute()
-        if rpc_res.data is not None:
-            return int(rpc_res.data)
-    except Exception:
-        pass
+        result = (
+            supabase.table("master_tickets")
+            .select("upvote_count")
+            .eq("id", master_ticket_id)
+            .single()
+            .execute()
+        )
+        if result.data and result.data.get("upvote_count") is not None:
+            return int(result.data["upvote_count"])
+    except Exception as e:
+        logger.warning(f"Could not fetch upvote_count for ticket {master_ticket_id}: {e}")
 
-    # Fallback to single-row update if migration not yet applied
-    result = (
-        supabase.table("master_tickets")
-        .select("upvote_count")
-        .eq("id", master_ticket_id)
-        .single()
-        .execute()
-    )
-    current = result.data.get("upvote_count", 1) if result.data else 1
-    new_count = current + 1
-    supabase.table("master_tickets").update(
-        {"upvote_count": new_count}
-    ).eq("id", master_ticket_id).execute()
-    return new_count
+    return 1
+
+
+# Backward-compatible alias
+async def increment_upvote(master_ticket_id: str) -> int:
+    """Deprecated: Upvote count is now automatically maintained by database trigger on ticket_reports."""
+    return await get_ticket_upvote_count(master_ticket_id)
 

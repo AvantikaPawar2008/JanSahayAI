@@ -128,3 +128,34 @@ def batch_recalculate_priorities(limit: int = 200) -> int:
         updated_count += 1
 
     return updated_count
+
+
+def recalculate_department_priorities(department: Optional[str] = None, limit: int = 50) -> int:
+    """
+    Recalculates SLA-elapsed priority scores on demand for active tickets in an officer's department.
+    Ensures that queue ranking never displays stale SLA elapsed times.
+    """
+    try:
+        supabase = get_supabase_client()
+        query = (
+            supabase.table("master_tickets")
+            .select("id, created_at, urgency, upvote_count")
+            .in_("status", ["OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED"])
+        )
+        if department:
+            query = query.eq("department", department)
+            
+        res = query.limit(limit).execute()
+        updated_count = 0
+        for t in (res.data or []):
+            comps = compute_priority_components(
+                created_at=t["created_at"],
+                urgency=t.get("urgency", "MEDIUM"),
+                duplicate_count=t.get("upvote_count", 1),
+            )
+            supabase.table("master_tickets").update(comps).eq("id", t["id"]).execute()
+            updated_count += 1
+        return updated_count
+    except Exception as e:
+        logger.warning(f"On-demand priority recalculation skipped: {e}")
+        return 0

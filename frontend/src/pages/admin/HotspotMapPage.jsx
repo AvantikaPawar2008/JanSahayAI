@@ -135,11 +135,17 @@ export default function HotspotMapPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-3xl font-bold gradient-text flex items-center gap-2.5">
-            <Flame className="w-8 h-8 text-red-500 animate-pulse" />
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-coral-50 text-coral-700 border border-coral-200">
+              Spatial Intelligence
+            </span>
+            <span className="text-xs text-charcoal-400 font-mono">DBSCAN Density Analysis</span>
+          </div>
+          <h1 className="text-3xl font-extrabold text-charcoal-900 tracking-tight flex items-center gap-2.5">
+            <Flame className="w-7 h-7 text-coral-600" />
             Civic Hotspot &amp; Heatmap
           </h1>
-          <p className="text-white/50 text-sm mt-1">
+          <p className="text-charcoal-500 text-sm mt-1">
             Real-time geospatial density and DBSCAN cluster analysis of municipal complaints
           </p>
         </div>
@@ -150,8 +156,8 @@ export default function HotspotMapPage() {
             id="toggle-pins"
             onClick={() => setShowPins(!showPins)}
             title="Toggle individual ticket pins"
-            className={`btn-secondary text-xs px-3 py-2 flex items-center gap-1.5 ${
-              showPins ? 'border-blue-500/40 text-blue-300' : 'text-white/40'
+            className={`btn-secondary text-xs px-3 py-2 flex items-center gap-1.5 font-medium ${
+              showPins ? 'bg-civic-50 text-civic-800 border-civic-300' : 'text-charcoal-500'
             }`}
           >
             <MapPin className="w-3.5 h-3.5" />
@@ -162,8 +168,8 @@ export default function HotspotMapPage() {
             id="toggle-heatmap"
             onClick={() => setShowHeatmap(!showHeatmap)}
             title="Toggle density heatmap"
-            className={`btn-secondary text-xs px-3 py-2 flex items-center gap-1.5 ${
-              showHeatmap ? 'border-civic-500/40 text-civic-300' : 'text-white/40'
+            className={`btn-secondary text-xs px-3 py-2 flex items-center gap-1.5 font-medium ${
+              showHeatmap ? 'bg-civic-50 text-civic-800 border-civic-300' : 'text-charcoal-500'
             }`}
           >
             <Thermometer className="w-3.5 h-3.5" />
@@ -174,8 +180,8 @@ export default function HotspotMapPage() {
             id="toggle-clusters"
             onClick={() => setShowClusters(!showClusters)}
             title="Toggle hotspot cluster circles"
-            className={`btn-secondary text-xs px-3 py-2 flex items-center gap-1.5 ${
-              showClusters ? 'border-amber-500/40 text-amber-300' : 'text-white/40'
+            className={`btn-secondary text-xs px-3 py-2 flex items-center gap-1.5 font-medium ${
+              showClusters ? 'bg-coral-50 text-coral-800 border-coral-300' : 'text-charcoal-500'
             }`}
           >
             <Eye className="w-3.5 h-3.5" />
@@ -183,65 +189,65 @@ export default function HotspotMapPage() {
           </button>
 
           <button onClick={fetchMapData} className="btn-secondary px-3 py-2" title="Refresh data">
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className="w-4 h-4 text-charcoal-600" />
           </button>
 
           <button
             onClick={runDetection}
             disabled={detecting}
-            className="btn-primary text-xs px-4 py-2 flex items-center gap-1.5"
+            className="btn-primary text-xs px-4 py-2 flex items-center gap-1.5 shadow-sm"
           >
-            {detecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+            {detecting ? <Loader2 className="w-4 h-4 animate-spin text-white" /> : <Zap className="w-4 h-4" />}
             Run DBSCAN Clustering
           </button>
         </div>
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <div className="glass-card-static p-4 border-blue-500/20">
-          <p className="text-xs text-white/40">Open Tickets (Pins)</p>
-          <p className="text-2xl font-bold text-blue-400 mt-1">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 mb-6">
+        <div className="bg-white p-4 rounded-2xl border border-ivory-300 shadow-card">
+          <p className="text-xs text-charcoal-500 font-medium">Open Tickets (Pins)</p>
+          <p className="text-2xl font-bold font-mono text-charcoal-900 mt-1">
             {mapData.total_open_tickets ?? openTickets.length}
           </p>
         </div>
-        <div className="glass-card-static p-4 border-red-500/20">
-          <p className="text-xs text-white/40">Active Hotspot Zones</p>
-          <p className="text-2xl font-bold text-red-400 mt-1">
+        <div className="bg-white p-4 rounded-2xl border border-ivory-300 shadow-card">
+          <p className="text-xs text-charcoal-500 font-medium">Active Hotspot Zones</p>
+          <p className="text-2xl font-bold font-mono text-coral-600 mt-1">
             {mapData.total_active_clusters ?? mapData.hotspots?.length ?? 0}
           </p>
         </div>
-        <div className="glass-card-static p-4 border-amber-500/20">
-          <p className="text-xs text-white/40">Heatmap Points</p>
-          <p className="text-2xl font-bold text-amber-400 mt-1">
+        <div className="bg-white p-4 rounded-2xl border border-ivory-300 shadow-card">
+          <p className="text-xs text-charcoal-500 font-medium">Heatmap Points</p>
+          <p className="text-2xl font-bold font-mono text-amber-600 mt-1">
             {mapData.total_incident_points ?? mapData.heatmap_points?.length ?? 0}
           </p>
         </div>
-        <div className="glass-card-static p-4 border-emerald-500/20">
-          <p className="text-xs text-white/40">Cluster Radius</p>
-          <p className="text-2xl font-bold text-emerald-400 mt-1">100 m</p>
+        <div className="bg-white p-4 rounded-2xl border border-ivory-300 shadow-card">
+          <p className="text-xs text-charcoal-500 font-medium">Cluster Radius</p>
+          <p className="text-2xl font-bold font-mono text-civic-700 mt-1">100 m</p>
         </div>
       </div>
 
       {/* Legend */}
-      <div className="glass-card-static mb-4 flex flex-wrap items-center gap-4 py-3">
-        <span className="text-xs text-white/40 font-semibold uppercase tracking-wide">Pin Legend:</span>
+      <div className="bg-white rounded-xl border border-ivory-300 shadow-sm mb-4 flex flex-wrap items-center gap-4 py-2.5 px-4">
+        <span className="text-xs text-charcoal-500 font-bold uppercase tracking-wide">Pin Legend:</span>
         {Object.entries(URGENCY_COLORS).map(([level, color]) => (
-          <span key={level} className="flex items-center gap-1.5 text-xs text-white/60">
-            <span style={{ background: color }} className="w-3 h-3 rounded-full inline-block border border-white/20" />
+          <span key={level} className="flex items-center gap-1.5 text-xs text-charcoal-700 font-medium">
+            <span style={{ background: color }} className="w-3 h-3 rounded-full inline-block border border-black/10" />
             {level}
           </span>
         ))}
-        <span className="flex items-center gap-1.5 text-xs text-white/60 ml-2 border-l border-white/10 pl-4">
+        <span className="flex items-center gap-1.5 text-xs text-charcoal-700 font-medium ml-2 border-l border-ivory-300 pl-4">
           🔥 Hotspot Alert (always shown)
         </span>
       </div>
 
       {/* Map Container */}
-      <div className="glass-card p-2 border-white/10 rounded-2xl overflow-hidden shadow-2xl relative" style={{ height: '620px' }}>
+      <div className="bg-white p-2 border border-ivory-300 rounded-2xl overflow-hidden shadow-card relative" style={{ height: '620px' }}>
         {loading ? (
           <div className="h-full flex items-center justify-center">
-            <Loader2 className="w-8 h-8 text-civic-400 animate-spin" />
+            <Loader2 className="w-8 h-8 text-civic-600 animate-spin" />
           </div>
         ) : (
           <MapContainer

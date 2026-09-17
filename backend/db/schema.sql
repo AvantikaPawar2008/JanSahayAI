@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS master_tickets (
     created_at TIMESTAMPTZ DEFAULT now(),
     description TEXT,
     sub_category TEXT,
+    text_embedding vector(384),
     needs_admin_review BOOLEAN DEFAULT false,
     department_reassigned_by UUID REFERENCES auth.users(id),
     department_reassigned_at TIMESTAMPTZ
@@ -143,6 +144,8 @@ CREATE TABLE IF NOT EXISTS verification_photos (
 CREATE TABLE IF NOT EXISTS hotspot_alerts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category TEXT NOT NULL,
+    sub_category TEXT,
+    department department_type,
     center_lat DOUBLE PRECISION NOT NULL,
     center_lng DOUBLE PRECISION NOT NULL,
     radius_m DOUBLE PRECISION DEFAULT 100,
@@ -202,6 +205,12 @@ CREATE INDEX IF NOT EXISTS idx_hotspot_alerts_status
 
 CREATE INDEX IF NOT EXISTS idx_hotspot_alerts_created_at
     ON hotspot_alerts (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hotspot_alerts_department
+    ON hotspot_alerts (department);
+
+CREATE INDEX IF NOT EXISTS idx_hotspot_alerts_sub_category
+    ON hotspot_alerts (sub_category);
 
 -- ============================================================
 -- 5. ROW LEVEL SECURITY (basic policies)
@@ -272,12 +281,8 @@ CREATE POLICY "Service role full access on user_profiles"
     USING (true)
     WITH CHECK (true);
 
--- Allow anon/authenticated read on select tables for frontend
+-- Allow anonymous report submissions from frontend
 DROP POLICY IF EXISTS "Anon can read master_tickets" ON master_tickets;
-CREATE POLICY "Anon can read master_tickets"
-    ON master_tickets FOR SELECT
-    TO anon
-    USING (true);
 
 DROP POLICY IF EXISTS "Anon can insert ticket_reports" ON ticket_reports;
 CREATE POLICY "Anon can insert ticket_reports"
@@ -292,10 +297,6 @@ CREATE POLICY "Authenticated read verification_photos"
     USING (true);
 
 DROP POLICY IF EXISTS "Authenticated read hotspot_alerts" ON hotspot_alerts;
-CREATE POLICY "Authenticated read hotspot_alerts"
-    ON hotspot_alerts FOR SELECT
-    TO authenticated
-    USING (true);
 
 DROP POLICY IF EXISTS "Users can read own profile" ON user_profiles;
 CREATE POLICY "Users can read own profile"
@@ -493,58 +494,68 @@ USING (
   EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
 );
 
+-- Citizens can view a specific master ticket only if they have a linked report on it
+DROP POLICY IF EXISTS "citizens_view_tracking_tickets" ON master_tickets;
+DROP POLICY IF EXISTS "citizens_view_linked_tickets" ON master_tickets;
+CREATE POLICY "citizens_view_linked_tickets"
+ON master_tickets FOR SELECT
+USING (
+  EXISTS (
+    SELECT 1 FROM ticket_reports tr
+    WHERE tr.master_ticket_id = master_tickets.id
+    AND tr.citizen_id = auth.uid()
+  )
+);
+
+-- Admin-only hotspot alert view (explicit scoped security instead of authenticated blanket access)
+DROP POLICY IF EXISTS "admins_view_all_hotspots" ON hotspot_alerts;
+DROP POLICY IF EXISTS "admins_view_hotspot_alerts" ON hotspot_alerts;
+CREATE POLICY "admins_view_hotspot_alerts"
+ON hotspot_alerts FOR SELECT
+USING (
+  EXISTS (SELECT 1 FROM profiles WHERE profiles.id = auth.uid() AND profiles.role = 'admin')
+);
+
 -- ============================================================
--- 11. GEOSPATIAL CLUSTERING & DEDUPLICATION FUNCTIONS (Migration 005)
+-- 11. GEOSPATIAL CLUSTERING & DEDUPLICATION FUNCTIONS (Migration 007)
 -- ============================================================
 
 DROP FUNCTION IF EXISTS find_nearby_tickets(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) CASCADE;
-DROP FUNCTION IF EXISTS detect_hotspot_clusters(DOUBLE PRECISION, INTEGER, INTEGER) CASCADE;
-DROP FUNCTION IF EXISTS increment_ticket_upvote(UUID) CASCADE;
-DROP FUNCTION IF EXISTS find_nearby_hotspots(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT) CASCADE;
-DROP FUNCTION IF EXISTS find_nearby_hotspots(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS find_nearby_tickets(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, department_type, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS find_nearby_tickets(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT) CASCADE;
 
--- Function: Find nearby tickets for deduplication
+-- Function: Find nearby tickets for deduplication (hard-filtered by department and sub_category)
 CREATE OR REPLACE FUNCTION find_nearby_tickets(
     search_lat DOUBLE PRECISION,
     search_lng DOUBLE PRECISION,
-    radius_m DOUBLE PRECISION DEFAULT 100
+    radius_m DOUBLE PRECISION DEFAULT 100,
+    search_department department_type DEFAULT NULL,
+    search_sub_category TEXT DEFAULT NULL
 )
 RETURNS TABLE (
-    id UUID,
-    category TEXT,
-    sub_category TEXT,
-    department department_type,
-    urgency urgency_level,
-    status ticket_status,
-    lat DOUBLE PRECISION,
-    lng DOUBLE PRECISION,
-    upvote_count INTEGER,
-    created_at TIMESTAMPTZ
+    id UUID, category TEXT, sub_category TEXT, department department_type,
+    urgency urgency_level, status ticket_status, lat DOUBLE PRECISION, lng DOUBLE PRECISION,
+    upvote_count INTEGER, created_at TIMESTAMPTZ
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT
-        mt.id,
-        mt.category,
-        mt.sub_category,
-        mt.department,
-        mt.urgency,
-        mt.status,
-        mt.lat,
-        mt.lng,
-        mt.upvote_count,
-        mt.created_at
+    SELECT mt.id, mt.category, mt.sub_category, mt.department, mt.urgency, mt.status,
+           mt.lat, mt.lng, mt.upvote_count, mt.created_at
     FROM master_tickets mt
     WHERE mt.status NOT IN ('RESOLVED', 'CLOSED')
-    AND ST_DWithin(
-        mt.location,
-        ST_SetSRID(ST_MakePoint(search_lng, search_lat), 4326)::geography,
-        radius_m
-    );
+      AND (search_department IS NULL OR mt.department = search_department)
+      AND (search_sub_category IS NULL OR mt.sub_category = search_sub_category)
+      AND ST_DWithin(
+          mt.location,
+          ST_SetSRID(ST_MakePoint(search_lng, search_lat), 4326)::geography,
+          radius_m
+      );
 END;
 $$ LANGUAGE plpgsql;
 
--- Function: Detect hotspot clusters using metric DBSCAN (EPSG:3857)
+-- Function: Detect hotspot clusters using metric DBSCAN (EPSG:3857) partitioned by department & sub_category
+DROP FUNCTION IF EXISTS detect_hotspot_clusters(DOUBLE PRECISION, INTEGER, INTEGER) CASCADE;
+
 CREATE OR REPLACE FUNCTION detect_hotspot_clusters(
     eps_meters DOUBLE PRECISION DEFAULT 100,
     min_pts INTEGER DEFAULT 5,
@@ -552,6 +563,8 @@ CREATE OR REPLACE FUNCTION detect_hotspot_clusters(
 )
 RETURNS TABLE (
     category TEXT,
+    sub_category TEXT,
+    department department_type,
     center_lat DOUBLE PRECISION,
     center_lng DOUBLE PRECISION,
     radius_m DOUBLE PRECISION,
@@ -562,67 +575,64 @@ BEGIN
     RETURN QUERY
     WITH clustered AS (
         SELECT
-            mt.id,
-            mt.category,
-            mt.lat,
-            mt.lng,
-            mt.location,
-            -- Project to Web Mercator (meters) so eps operates on true meters!
+            mt.id, mt.category, mt.sub_category, mt.department, mt.lat, mt.lng, mt.location,
+            -- Partition by BOTH department and sub_category, and exclude unclassified tickets
             ST_ClusterDBSCAN(
                 ST_Transform(mt.location::geometry, 3857),
                 eps := eps_meters,
                 minpoints := min_pts
-            ) OVER (PARTITION BY mt.category) AS cluster_id
+            ) OVER (PARTITION BY mt.department, mt.sub_category) AS cluster_id
         FROM master_tickets mt
-        WHERE mt.created_at >= NOW() - (hours_window || ' hours')::INTERVAL
-          AND mt.status NOT IN ('RESOLVED', 'CLOSED')
+        WHERE mt.status NOT IN ('RESOLVED', 'CLOSED')
+          AND mt.department IS NOT NULL
+          AND mt.sub_category IS NOT NULL
+          AND mt.needs_admin_review IS NOT TRUE                          -- Exclude misclassified tickets
+          AND mt.created_at >= NOW() - (hours_window || ' hours')::INTERVAL  -- Rolling window
+    ),
+    cluster_centroids AS (
+        SELECT
+            c.department, c.sub_category, c.cluster_id,
+            MODE() WITHIN GROUP (ORDER BY c.category) AS primary_category,
+            AVG(c.lat) AS c_lat, AVG(c.lng) AS c_lng,
+            COUNT(*)::BIGINT AS c_count,
+            ARRAY_AGG(c.id) AS c_ticket_ids
+        FROM clustered c
+        WHERE c.cluster_id IS NOT NULL
+        GROUP BY c.department, c.sub_category, c.cluster_id
+        HAVING COUNT(*) >= min_pts
     )
     SELECT
-        c.category,
-        AVG(c.lat) AS center_lat,
-        AVG(c.lng) AS center_lng,
+        cen.primary_category AS category,
+        cen.sub_category,
+        cen.department,
+        cen.c_lat AS center_lat,
+        cen.c_lng AS center_lng,
         GREATEST(
             eps_meters,
-            COALESCE(
-                MAX(
-                    ST_Distance(
-                        c.location,
-                        ST_SetSRID(ST_MakePoint(AVG(c.lng), AVG(c.lat)), 4326)::geography
-                    )
-                ),
-                eps_meters
-            )
+            COALESCE((
+                SELECT MAX(ST_Distance(c2.location, ST_SetSRID(ST_MakePoint(cen.c_lng, cen.c_lat), 4326)::geography))
+                FROM clustered c2
+                WHERE c2.cluster_id = cen.cluster_id
+                  AND c2.department = cen.department
+                  AND c2.sub_category = cen.sub_category
+            ), eps_meters)
         ) AS radius_m,
-        COUNT(*)::BIGINT AS ticket_count,
-        ARRAY_AGG(c.id) AS ticket_ids
-    FROM clustered c
-    WHERE c.cluster_id IS NOT NULL
-    GROUP BY c.category, c.cluster_id
-    HAVING COUNT(*) >= min_pts;
+        cen.c_count AS ticket_count,
+        cen.c_ticket_ids AS ticket_ids
+    FROM cluster_centroids cen;
 END;
 $$ LANGUAGE plpgsql;
 
--- Function: Atomic ticket upvote increment
-CREATE OR REPLACE FUNCTION increment_ticket_upvote(target_ticket_id UUID)
-RETURNS INTEGER AS $$
-DECLARE
-    new_count INTEGER;
-BEGIN
-    UPDATE master_tickets
-    SET upvote_count = COALESCE(upvote_count, 1) + 1
-    WHERE id = target_ticket_id
-    RETURNING upvote_count INTO new_count;
-    
-    RETURN new_count;
-END;
-$$ LANGUAGE plpgsql;
+-- Function: Find nearby hotspots (strict department and sub_category matching)
+DROP FUNCTION IF EXISTS find_nearby_hotspots(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS find_nearby_hotspots(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS find_nearby_hotspots(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, department_type, TEXT) CASCADE;
 
--- Function: Find nearby hotspots
 CREATE OR REPLACE FUNCTION find_nearby_hotspots(
     search_lat DOUBLE PRECISION,
     search_lng DOUBLE PRECISION,
     radius_m DOUBLE PRECISION DEFAULT 200,
-    search_category TEXT DEFAULT '',
+    search_department department_type DEFAULT NULL,
     search_sub_category TEXT DEFAULT NULL
 )
 RETURNS TABLE (id UUID, category TEXT, status alert_status) AS $$
@@ -630,7 +640,8 @@ BEGIN
     RETURN QUERY
     SELECT ha.id, ha.category, ha.status
     FROM hotspot_alerts ha
-    WHERE ha.category = search_category
+    WHERE ha.department = search_department          -- exact match only, no NULL wildcard
+      AND ha.sub_category = search_sub_category       -- exact match only, no NULL wildcard
       AND ha.status NOT IN ('RESOLVED')
       AND ST_DWithin(
           ST_SetSRID(ST_MakePoint(ha.center_lng, ha.center_lat), 4326)::geography,
@@ -639,5 +650,29 @@ BEGIN
       );
 END;
 $$ LANGUAGE plpgsql;
+
+-- Trigger: Automatically derive upvote_count from linked ticket_reports (closes spoofing vector)
+DROP FUNCTION IF EXISTS increment_ticket_upvote(UUID) CASCADE;
+
+CREATE OR REPLACE FUNCTION sync_ticket_upvote_count() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE master_tickets
+    SET upvote_count = (SELECT COUNT(*) FROM ticket_reports WHERE master_ticket_id = NEW.master_ticket_id)
+    WHERE id = NEW.master_ticket_id;
+  ELSIF TG_OP = 'DELETE' THEN
+    UPDATE master_tickets
+    SET upvote_count = (SELECT COUNT(*) FROM ticket_reports WHERE master_ticket_id = OLD.master_ticket_id)
+    WHERE id = OLD.master_ticket_id;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_ticket_report_change ON ticket_reports;
+CREATE TRIGGER on_ticket_report_change
+  AFTER INSERT OR DELETE ON ticket_reports
+  FOR EACH ROW EXECUTE PROCEDURE sync_ticket_upvote_count();
+
 
 

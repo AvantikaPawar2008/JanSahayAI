@@ -2,8 +2,7 @@ import { Zap, Clock, AlertTriangle, Users } from 'lucide-react'
 
 /**
  * PriorityBreakdown — displays stored sub-scores from master_tickets (SLA / Urgency / Duplicates)
- * plus the total computed priority score.
- * Example: "SLA: 3.2 · Urgency: 4.0 · Duplicates: 1.2 = 8.4"
+ * plus the total computed priority score in a clean civic SaaS pill.
  */
 export default function PriorityBreakdown({
   slaComponent,
@@ -19,32 +18,35 @@ export default function PriorityBreakdown({
 
   return (
     <div
-      className={`inline-flex flex-wrap items-center gap-1.5 px-2.5 py-1 rounded-lg bg-surface-800/90 border border-civic-500/20 text-xs shadow-sm ${className}`}
+      className={`inline-flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-lg bg-ivory-100 border border-ivory-300 text-xs text-charcoal-600 ${className}`}
       title="Priority = (SLA Elapsed × 0.4) + (Urgency Weight × 0.4) + (Duplicates × 0.2)"
     >
-      <span className="flex items-center gap-1 text-white/50" title="SLA Component">
-        <Clock className="w-3 h-3 text-blue-400" />
-        <span>SLA: <strong className="text-white/80 font-mono">{sla}</strong></span>
+      <span className="flex items-center gap-1" title="SLA Component">
+        <Clock className="w-3 h-3 text-muted-blue-500" />
+        <span className="text-charcoal-500">SLA:</span>
+        <strong className="text-charcoal-800 font-mono">{sla}</strong>
       </span>
 
-      <span className="text-white/20">·</span>
+      <span className="text-charcoal-300">·</span>
 
-      <span className="flex items-center gap-1 text-white/50" title="Urgency Component">
-        <AlertTriangle className="w-3 h-3 text-amber-400" />
-        <span>Urgency: <strong className="text-white/80 font-mono">{urgency}</strong></span>
+      <span className="flex items-center gap-1" title="Urgency Component">
+        <AlertTriangle className="w-3 h-3 text-amber-500" />
+        <span className="text-charcoal-500">Urg:</span>
+        <strong className="text-charcoal-800 font-mono">{urgency}</strong>
       </span>
 
-      <span className="text-white/20">·</span>
+      <span className="text-charcoal-300">·</span>
 
-      <span className="flex items-center gap-1 text-white/50" title="Duplicate Reports Component">
-        <Users className="w-3 h-3 text-purple-400" />
-        <span>Duplicates: <strong className="text-white/80 font-mono">{duplicates}</strong></span>
+      <span className="flex items-center gap-1" title="Duplicate Reports Component">
+        <Users className="w-3 h-3 text-sage-600" />
+        <span className="text-charcoal-500">Dup:</span>
+        <strong className="text-charcoal-800 font-mono">{duplicates}</strong>
       </span>
 
-      <span className="text-white/30 font-semibold">=</span>
+      <span className="text-charcoal-300">=</span>
 
-      <span className="flex items-center gap-1 font-semibold text-civic-300">
-        <Zap className="w-3 h-3 text-civic-400" />
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-civic-50 border border-civic-200 text-civic-700 font-semibold">
+        <Zap className="w-3 h-3 text-civic-600" />
         <span className="font-mono text-xs">{total}</span>
       </span>
     </div>

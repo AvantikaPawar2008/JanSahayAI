@@ -3,7 +3,7 @@ import UrgencyBadge from './UrgencyBadge'
 import PriorityBreakdown from './PriorityBreakdown'
 
 /**
- * TicketCard — compact ticket summary with urgency badge, location, and metadata.
+ * TicketCard — clean civic-tech card with urgency badge, location in words, and metadata.
  * Props: ticket (object), onClick, showPriority
  */
 export default function TicketCard({ ticket, onClick, showPriority = false }) {
@@ -28,11 +28,11 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
   }
 
   const deptBadgeStyles = {
-    'Water Supply & Sewerage': 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
-    'Roads & Infrastructure': 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-    'Solid Waste Management': 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
-    'Electrical & Streetlighting': 'bg-yellow-500/15 text-yellow-300 border-yellow-500/30',
-    'Health & Sanitation': 'bg-purple-500/15 text-purple-300 border-purple-500/30',
+    'Water Supply & Sewerage': 'bg-muted-blue-50 text-muted-blue-700 border-muted-blue-200',
+    'Roads & Infrastructure': 'bg-amber-50 text-amber-700 border-amber-200',
+    'Solid Waste Management': 'bg-sage-50 text-sage-800 border-sage-200',
+    'Electrical & Streetlighting': 'bg-yellow-50 text-yellow-800 border-yellow-200',
+    'Health & Sanitation': 'bg-emerald-50 text-emerald-800 border-emerald-200',
   }
 
   const timeAgo = (dateStr) => {
@@ -53,7 +53,7 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
   return (
     <div
       onClick={onClick}
-      className="glass-card cursor-pointer group hover:scale-[1.01] transition-all duration-200 animate-fade-in"
+      className="glass-card cursor-pointer group hover:scale-[1.005] hover:border-civic-300 transition-all duration-200 animate-fade-in"
     >
       <div className="flex items-start justify-between gap-3">
         {/* Left: Category + Description */}
@@ -64,29 +64,37 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
               {statusLabels[ticket.status] || ticket.status}
             </span>
             {ticket.department && (
-              <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-medium border ${deptBadgeStyles[ticket.department] || 'bg-white/10 text-white/70 border-white/20'}`}>
+              <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-medium border ${deptBadgeStyles[ticket.department] || 'bg-ivory-200 text-charcoal-600 border-ivory-300'}`}>
                 {ticket.department}
               </span>
             )}
             {/* Prominent citizen-report-count badge — key signal that duplicates were merged */}
             {ticket.upvote_count > 1 && (
-              <span className="flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                <Users className="w-3 h-3" />
+              <span className="flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                <Users className="w-3 h-3 text-amber-600" />
                 {ticket.upvote_count} citizens reported
               </span>
             )}
             {ticket.needs_admin_review && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-red-500/20 text-red-300 border border-red-500/40 animate-pulse flex items-center gap-1">
-                <AlertTriangle className="w-3 h-3 text-red-400" /> Needs Review
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-coral-50 text-coral-700 border border-coral-200 flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3 text-coral-600" /> Needs Review
               </span>
             )}
           </div>
 
-          <h3 className="font-semibold text-white/90 text-sm mb-1 truncate">
+          <h3 className="font-bold text-charcoal-900 text-sm mb-1.5 truncate group-hover:text-civic-700 transition-colors">
             {ticket.category || 'Civic Issue'}
           </h3>
 
-          <p className="text-xs text-white/50 line-clamp-2 mb-3">
+          {/* Prominent Human-Readable Address in Words */}
+          <div className="flex items-center gap-1.5 text-xs text-civic-800 font-medium mb-2.5 bg-civic-50 px-2.5 py-1.5 rounded-lg border border-civic-100">
+            <MapPin className="w-3.5 h-3.5 text-civic-600 flex-shrink-0" />
+            <span className="truncate" title={ticket.address_text || (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(5)}, ${ticket.lng.toFixed(5)}` : 'Location')}>
+              {ticket.address_text || (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(4)}, ${ticket.lng.toFixed(4)}` : 'Location Pending')}
+            </span>
+          </div>
+
+          <p className="text-xs text-charcoal-500 line-clamp-2 mb-3 leading-relaxed">
             {ticket.description || 'No description available'}
           </p>
 
@@ -103,13 +111,13 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
           )}
 
           {/* Meta row */}
-          <div className="flex items-center gap-4 text-xs text-white/40">
+          <div className="flex items-center gap-4 text-xs text-charcoal-400 font-medium">
             <span className="flex items-center gap-1">
-              <MapPin className="w-3 h-3" />
+              <MapPin className="w-3 h-3 text-charcoal-400" />
               {ticket.lat?.toFixed(4)}, {ticket.lng?.toFixed(4)}
             </span>
             <span className="flex items-center gap-1">
-              <Clock className="w-3 h-3" />
+              <Clock className="w-3 h-3 text-charcoal-400" />
               {timeAgo(ticket.created_at)}
             </span>
           </div>
@@ -117,7 +125,7 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
 
         {/* Right: Arrow */}
         <div className="flex flex-col items-end gap-2 flex-shrink-0 pt-1">
-          <ChevronRight className="w-4 h-4 text-white/20 group-hover:text-civic-400 transition-colors" />
+          <ChevronRight className="w-4 h-4 text-charcoal-300 group-hover:text-civic-600 transition-colors" />
         </div>
       </div>
     </div>

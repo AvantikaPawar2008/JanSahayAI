@@ -90,8 +90,8 @@ export default function VoiceRecorderButton({ onRecordingComplete, disabled = fa
         )}
       </button>
 
-      <span className={`text-xs font-medium ${recording ? 'text-red-400' : 'text-white/50'}`}>
-        {recording ? `Recording ${formatDuration(duration)}` : 'Tap to record'}
+      <span className={`text-xs font-semibold ${recording ? 'text-coral-600' : 'text-charcoal-500'}`}>
+        {recording ? `Recording ${formatDuration(duration)}` : 'Tap to record audio'}
       </span>
 
       {recording && (

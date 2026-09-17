@@ -67,6 +67,7 @@ class IntakeResponse(BaseModel):
     urgency: Optional[str] = None
     message: str
     upvote_count: int = 1
+    address_text: Optional[str] = None
 
 
 # ============================================================
@@ -99,6 +100,7 @@ class TicketResponse(BaseModel):
     status: str
     lat: float
     lng: float
+    address_text: Optional[str] = None
     sop_steps: Optional[List[str]] = None
     tools_required: Optional[List[str]] = None
     citizen_sms_draft: Optional[str] = None
@@ -147,6 +149,7 @@ class OfficerQueueItem(BaseModel):
     status: str
     lat: float
     lng: float
+    address_text: Optional[str] = None
     upvote_count: int = 1
     description: Optional[str] = None
     created_at: Optional[str] = None
@@ -196,6 +199,8 @@ class HotspotAlert(BaseModel):
     """A detected hotspot cluster alert."""
     id: str
     category: str
+    sub_category: Optional[str] = None
+    department: Optional[str] = None
     center_lat: float
     center_lng: float
     radius_m: float

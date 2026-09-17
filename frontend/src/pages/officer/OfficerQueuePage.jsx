@@ -16,6 +16,9 @@ export default function OfficerQueuePage() {
   const [loading, setLoading] = useState(true)
   const [viewMode, setViewMode] = useState('list') // list | map
   const [departmentFilter, setDepartmentFilter] = useState('')
+  const [urgencyFilter, setUrgencyFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [sortOrder, setSortOrder] = useState('priority_score_desc')
   const [refreshing, setRefreshing] = useState(false)
 
   const departments = [
@@ -26,10 +29,21 @@ export default function OfficerQueuePage() {
     'Health & Sanitation',
   ]
 
+  useEffect(() => {
+    // Auto-select officer's department if available
+    if (profile?.department && !departmentFilter) {
+      setDepartmentFilter(profile.department)
+    }
+  }, [profile])
+
   const fetchQueue = async () => {
     try {
       const params = new URLSearchParams()
       if (departmentFilter) params.set('department', departmentFilter)
+      if (urgencyFilter) params.set('urgency', urgencyFilter)
+      if (statusFilter) params.set('status', statusFilter)
+      // 2c: Always send sort parameter along with filter parameters
+      params.set('sort', sortOrder)
       
       const headers = {}
       if (session?.access_token) {
@@ -53,7 +67,7 @@ export default function OfficerQueuePage() {
     // Refresh every 30 seconds
     const interval = setInterval(fetchQueue, 30000)
     return () => clearInterval(interval)
-  }, [departmentFilter, session])
+  }, [departmentFilter, urgencyFilter, statusFilter, sortOrder, session])
 
   const handleRefresh = () => {
     setRefreshing(true)
@@ -74,79 +88,142 @@ export default function OfficerQueuePage() {
         <div>
           {profile?.department && (
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-xs px-2.5 py-0.5 rounded-full font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
-                <Shield className="w-3 h-3 text-amber-400" />
+              <span className="text-xs px-2.5 py-0.5 rounded-full font-medium bg-sage-100 text-civic-800 border border-sage-200 flex items-center gap-1.5">
+                <Shield className="w-3 h-3 text-civic-600" />
                 {profile.department} Team
               </span>
             </div>
           )}
-          <h1 className="text-3xl font-bold gradient-text">
-            {profile?.department ? `${profile.department} — Queue` : 'Officer Queue'}
+          <h1 className="text-3xl font-bold tracking-tight text-charcoal-900">
+            {departmentFilter ? `${departmentFilter} Queue` : 'All Municipal Tickets'}
+            <span className="text-xl font-normal text-charcoal-400 ml-2">({tickets.length} open)</span>
           </h1>
-          <p className="text-white/50 text-sm mt-1">
-            {tickets.length} active {tickets.length === 1 ? 'ticket' : 'tickets'} sorted by real-time municipal priority score
+          <p className="text-charcoal-500 text-sm mt-1">
+            {tickets.length} active {tickets.length === 1 ? 'ticket' : 'tickets'}
+            {departmentFilter ? ` in ${departmentFilter}` : ' across municipal departments'}
+            {sortOrder.startsWith('department') ? ' · grouped by department & sorted by priority' : ' · sorted by real-time municipal priority score'}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="btn-secondary px-3 py-2"
+            className="btn-secondary px-3 py-2 text-charcoal-700 hover:text-charcoal-900"
+            title="Refresh queue"
           >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-civic-600' : ''}`} />
           </button>
           <button
             onClick={() => setViewMode(viewMode === 'list' ? 'map' : 'list')}
-            className="btn-secondary px-3 py-2"
+            className="btn-secondary px-3 py-2 text-charcoal-700 hover:text-charcoal-900"
+            title={viewMode === 'list' ? 'Switch to Map view' : 'Switch to List view'}
           >
-            {viewMode === 'list' ? <MapIcon className="w-4 h-4" /> : <List className="w-4 h-4" />}
+            {viewMode === 'list' ? <MapIcon className="w-4 h-4 text-civic-600" /> : <List className="w-4 h-4 text-civic-600" />}
           </button>
         </div>
       </div>
 
-      {/* Urgency Stats */}
+      {/* Urgency Stats Cards — Clickable to filter */}
       <div className="grid grid-cols-4 gap-3 mb-6">
         {[
-          { key: 'CRITICAL', label: 'Critical', color: 'from-red-500/20 to-red-600/10 border-red-500/30', text: 'text-red-400' },
-          { key: 'HIGH', label: 'High', color: 'from-orange-500/20 to-orange-600/10 border-orange-500/30', text: 'text-orange-400' },
-          { key: 'MEDIUM', label: 'Medium', color: 'from-amber-500/20 to-amber-600/10 border-amber-500/30', text: 'text-amber-400' },
-          { key: 'LOW', label: 'Low', color: 'from-emerald-500/20 to-emerald-600/10 border-emerald-500/30', text: 'text-emerald-400' },
-        ].map(({ key, label, color, text }) => (
-          <div key={key} className={`rounded-xl border bg-gradient-to-br ${color} p-4 text-center`}>
+          { key: 'CRITICAL', label: 'Critical', color: 'bg-coral-50/80 border-coral-200 hover:border-coral-300', activeColor: 'ring-2 ring-coral-500 border-coral-400', text: 'text-coral-600' },
+          { key: 'HIGH', label: 'High', color: 'bg-orange-50/80 border-orange-200 hover:border-orange-300', activeColor: 'ring-2 ring-orange-500 border-orange-400', text: 'text-orange-600' },
+          { key: 'MEDIUM', label: 'Medium', color: 'bg-amber-50/80 border-amber-200 hover:border-amber-300', activeColor: 'ring-2 ring-amber-500 border-amber-400', text: 'text-amber-600' },
+          { key: 'LOW', label: 'Low', color: 'bg-civic-50/80 border-civic-200 hover:border-civic-300', activeColor: 'ring-2 ring-civic-500 border-civic-400', text: 'text-civic-600' },
+        ].map(({ key, label, color, activeColor, text }) => (
+          <div
+            key={key}
+            onClick={() => setUrgencyFilter(urgencyFilter === key ? '' : key)}
+            className={`cursor-pointer rounded-xl border ${color} p-4 text-center transition-all duration-200 hover:scale-[1.01] shadow-subtle ${urgencyFilter === key ? activeColor : ''}`}
+            title={`Click to filter by ${label}`}
+          >
             <p className={`text-2xl font-bold ${text}`}>{urgencyStats[key]}</p>
-            <p className="text-xs text-white/40 mt-1">{label}</p>
+            <p className="text-xs text-charcoal-500 mt-1 font-medium">{label}</p>
           </div>
         ))}
       </div>
 
-      {/* Department Filter */}
-      <div className="glass-card-static mb-6">
-        <div className="flex items-center gap-3 overflow-x-auto pb-1">
-          <Filter className="w-4 h-4 text-white/40 flex-shrink-0" />
+      {/* Filter and Sort Controls Bar */}
+      <div className="glass-card-static mb-6 space-y-3">
+        {/* Department Filters */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <span className="text-[11px] font-semibold text-charcoal-400 uppercase tracking-wide mr-1 flex items-center gap-1">
+            <Filter className="w-3.5 h-3.5 text-charcoal-400" /> Dept:
+          </span>
           <button
             onClick={() => setDepartmentFilter('')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex-shrink-0
-              ${!departmentFilter ? 'bg-civic-600/30 text-civic-300 border border-civic-500/30' : 'text-white/40 hover:text-white/60'}`}
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition-all flex-shrink-0
+              ${!departmentFilter ? 'bg-civic-500 text-white font-semibold shadow-sm' : 'text-charcoal-500 hover:text-charcoal-800 hover:bg-ivory-200'}`}
           >
-            All
+            All Departments
           </button>
-          {departments.map((dept) => (
-            <button
-              key={dept}
-              onClick={() => setDepartmentFilter(dept)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex-shrink-0
-                ${departmentFilter === dept ? 'bg-civic-600/30 text-civic-300 border border-civic-500/30' : 'text-white/40 hover:text-white/60'}`}
+          {departments.map((dept) => {
+            const isOfficerDept = profile?.department === dept
+            return (
+              <button
+                key={dept}
+                onClick={() => setDepartmentFilter(dept)}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-all flex-shrink-0 flex items-center gap-1
+                  ${departmentFilter === dept
+                    ? 'bg-civic-500 text-white font-semibold shadow-sm'
+                    : isOfficerDept
+                    ? 'text-civic-700 bg-sage-50 border border-sage-200 font-medium'
+                    : 'text-charcoal-500 hover:text-charcoal-800 hover:bg-ivory-200'}`}
+              >
+                {isOfficerDept && <Shield className="w-2.5 h-2.5 text-civic-600" />}
+                {dept.split(' ')[0]}
+                {isOfficerDept && <span className="text-[10px] opacity-80">(Mine)</span>}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Urgency & Status & Sort Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-ivory-300">
+          {/* Status filter */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] font-semibold text-charcoal-400 uppercase tracking-wide mr-1">Status:</span>
+            {['', 'OPEN', 'IN_PROGRESS', 'ASSIGNED', 'REOPENED'].map((st) => (
+              <button
+                key={st || 'all'}
+                onClick={() => setStatusFilter(st)}
+                className={`px-2.5 py-0.5 rounded-md text-xs transition-all ${
+                  statusFilter === st
+                    ? 'bg-charcoal-800 text-white font-medium shadow-sm'
+                    : 'text-charcoal-500 hover:text-charcoal-800 hover:bg-ivory-200'
+                }`}
+              >
+                {st ? st.replace('_', ' ') : 'Active'}
+              </button>
+            ))}
+          </div>
+
+          {/* Sort selector with Department-aware sorting */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold text-charcoal-400 uppercase tracking-wide">Sort:</span>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              className="bg-white text-charcoal-800 border border-ivory-300 rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-civic-500 cursor-pointer shadow-subtle"
             >
-              {dept.split(' ')[0]}
-            </button>
-          ))}
+              <option value="priority_score_desc">⚡ Priority Score (Highest first, oldest tiebreaker)</option>
+              <option value="department_asc">🏢 Department (A-Z) → Highest Priority</option>
+              <option value="department_desc">🏢 Department (Z-A) → Highest Priority</option>
+              {profile?.department && (
+                <option value="my_department_first">⭐ My Department First → Highest Priority</option>
+              )}
+              <option value="created_at_desc">🕒 Newest first</option>
+              <option value="created_at_asc">⏳ Oldest first</option>
+              <option value="priority_score_asc">Lowest Priority first</option>
+            </select>
+          </div>
         </div>
       </div>
 
       {/* Content */}
       {loading ? (
         <div className="flex justify-center py-16">
-          <Loader2 className="w-8 h-8 text-civic-400 animate-spin" />
+          <Loader2 className="w-8 h-8 text-civic-500 animate-spin" />
         </div>
       ) : viewMode === 'map' ? (
         <MapView
@@ -159,16 +236,35 @@ export default function OfficerQueuePage() {
         />
       ) : (
         <div className="space-y-3">
-          {tickets.map((ticket) => (
-            <TicketCard
-              key={ticket.id}
-              ticket={ticket}
-              showPriority={true}
-              onClick={() => navigate(`/officer/ticket/${ticket.id}`)}
-            />
-          ))}
+          {tickets.map((ticket, index) => {
+            const showDeptHeader =
+              (sortOrder.startsWith('department') || sortOrder === 'my_department_first' || !departmentFilter) &&
+              ticket.department &&
+              (index === 0 || tickets[index - 1].department !== ticket.department)
+
+            return (
+              <div key={ticket.id} className="space-y-2">
+                {showDeptHeader && (
+                  <div className="flex items-center justify-between gap-2 pt-4 pb-1.5 px-1 border-b border-ivory-300 text-xs font-semibold text-charcoal-700 uppercase tracking-wider">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-civic-500" />
+                      <span className="text-charcoal-900 font-bold">{ticket.department}</span>
+                    </div>
+                    <span className="text-[11px] text-charcoal-400 normal-case font-normal">
+                      {tickets.filter((t) => t.department === ticket.department).length} open tickets in this dept
+                    </span>
+                  </div>
+                )}
+                <TicketCard
+                  ticket={ticket}
+                  showPriority={true}
+                  onClick={() => navigate(`/officer/ticket/${ticket.id}`)}
+                />
+              </div>
+            )
+          })}
           {tickets.length === 0 && (
-            <div className="text-center py-16 text-white/30">
+            <div className="text-center py-16 text-charcoal-400">
               <p className="text-lg">🎉 No active tickets!</p>
               <p className="text-sm mt-2">The queue is empty. Great job!</p>
             </div>

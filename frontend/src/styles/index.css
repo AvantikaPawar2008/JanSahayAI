@@ -3,15 +3,25 @@
 @tailwind utilities;
 
 /* ============================================================
-   CivicPulse Design System — Dark-mode-first with glassmorphism
+   CivicPulse Design System — Refined Civic-Tech SaaS System
+   Mood: Light · Trustworthy · Civic · Intelligent · Human · Premium
    ============================================================ */
 
 :root {
-  --gradient-primary: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
-  --gradient-surface: linear-gradient(180deg, #0f172a 0%, #1e1b4b 100%);
-  --glass-bg: rgba(30, 27, 75, 0.6);
-  --glass-border: rgba(99, 102, 241, 0.15);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  --bg-foundation: #F7F9F7;
+  --surface-card: #FFFFFF;
+  --border-subtle: #E4EAE4;
+  --border-accent: #C5DFD7;
+  --civic-primary: #2F6F63;
+  --civic-hover: #265B51;
+  --sage-accent: #82AFA3;
+  --muted-blue: #6F9BD8;
+  --coral-alert: #D97870;
+  --text-primary: #1F2927;
+  --text-secondary: #5F6F6A;
+  --text-tertiary: #8B9A95;
+  --shadow-card: 0 2px 8px -2px rgba(47, 111, 99, 0.06), 0 1px 4px -1px rgba(31, 41, 39, 0.04);
+  --shadow-hover: 0 10px 24px -4px rgba(47, 111, 99, 0.10), 0 4px 10px -2px rgba(31, 41, 39, 0.05);
 }
 
 * {
@@ -21,12 +31,15 @@
 }
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background: var(--gradient-surface);
-  color: #e2e8f0;
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-foundation);
+  color: var(--text-primary);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Delicate smart-city geographic data grid motif */
+  background-image: radial-gradient(rgba(47, 111, 99, 0.07) 1px, transparent 1px);
+  background-size: 28px 28px;
 }
 
 #root {
@@ -34,179 +47,225 @@ body {
 }
 
 /* ============================================================
-   Glassmorphism Components
+   Civic SaaS Components
    ============================================================ */
 
 @layer components {
+  /* Crisp white surface cards with soft civic green shadow */
   .glass-card {
-    @apply rounded-2xl border border-white/10 p-6;
-    background: var(--glass-bg);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    box-shadow: var(--glass-shadow);
-    transition: all 0.3s ease;
+    @apply rounded-2xl border p-6 transition-all duration-200;
+    background-color: #FFFFFF;
+    border-color: #E4EAE4;
+    box-shadow: var(--shadow-card);
   }
 
   .glass-card:hover {
-    border-color: rgba(99, 102, 241, 0.3);
-    box-shadow: 0 8px 32px rgba(99, 102, 241, 0.15);
+    border-color: #C5DFD7;
+    box-shadow: var(--shadow-hover);
   }
 
   .glass-card-static {
-    @apply rounded-2xl border border-white/10 p-6;
-    background: var(--glass-bg);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    box-shadow: var(--glass-shadow);
+    @apply rounded-2xl border p-6;
+    background-color: #FFFFFF;
+    border-color: #E4EAE4;
+    box-shadow: var(--shadow-card);
   }
 
-  .glass-input {
-    @apply w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white
-           placeholder-white/40 outline-none transition-all duration-200;
+  /* Form Inputs */
+  .glass-input, .input-field {
+    @apply w-full rounded-xl border bg-white px-4 py-2.5 text-sm outline-none transition-all duration-200;
+    color: #1F2927;
+    border-color: #D5DDD5;
   }
 
-  .glass-input:focus {
-    @apply border-civic-500 ring-2 ring-civic-500/20;
+  .glass-input::placeholder, .input-field::placeholder {
+    color: #8B9A95;
   }
 
+  .glass-input:focus, .input-field:focus {
+    border-color: #2F6F63;
+    box-shadow: 0 0 0 3px rgba(47, 111, 99, 0.15);
+  }
+
+  /* Buttons */
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3
-           font-semibold text-white transition-all duration-200;
-    background: var(--gradient-primary);
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5
+           font-semibold text-white transition-all duration-200 text-sm;
+    background-color: #2F6F63;
+    box-shadow: 0 2px 6px rgba(47, 111, 99, 0.20);
   }
 
   .btn-primary:hover {
-    @apply shadow-lg shadow-civic-500/25 scale-[1.02];
+    background-color: #265B51;
+    box-shadow: 0 6px 16px rgba(47, 111, 99, 0.25);
+    transform: translateY(-1px);
   }
 
   .btn-primary:active {
-    @apply scale-[0.98];
+    transform: translateY(0);
   }
 
   .btn-primary:disabled {
-    @apply opacity-50 cursor-not-allowed scale-100 shadow-none;
+    @apply opacity-50 cursor-not-allowed transform-none shadow-none;
   }
 
   .btn-secondary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3
-           font-semibold text-white transition-all duration-200
-           border border-white/10 bg-white/5;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
+           font-medium transition-all duration-200 text-sm
+           border bg-white;
+    color: #2F3D39;
+    border-color: #D5DDD5;
+    box-shadow: 0 1px 2px rgba(31, 41, 39, 0.04);
   }
 
   .btn-secondary:hover {
-    @apply bg-white/10 border-white/20;
+    background-color: #F7F9F7;
+    border-color: #B0C9BF;
+    color: #1F2927;
   }
 
   .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3
-           font-semibold text-white transition-all duration-200
-           bg-red-500/20 border border-red-500/30;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
+           font-medium transition-all duration-200 text-sm border;
+    background-color: #FDF4F3;
+    border-color: #F8D0CD;
+    color: #C45E56;
   }
 
   .btn-danger:hover {
-    @apply bg-red-500/30;
+    background-color: #FCE7E6;
+    border-color: #F1AFA8;
   }
 
+  /* Typography Gradients & Titles */
   .gradient-text {
     @apply bg-clip-text text-transparent;
-    background-image: var(--gradient-primary);
+    background-image: linear-gradient(135deg, #1F2927 0%, #2F6F63 70%, #5F9E90 100%);
   }
 
+  /* Navigation Links */
   .nav-link {
-    @apply flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-           text-white/60 transition-all duration-200;
+    @apply flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium
+           transition-all duration-150;
+    color: #5F6F6A;
   }
 
   .nav-link:hover {
-    @apply text-white bg-white/5;
+    color: #1F2927;
+    background-color: #EBEEED;
   }
 
   .nav-link.active {
-    @apply text-white bg-civic-600/30 border border-civic-500/20;
+    color: #1D453E;
+    background-color: #F2F8F6;
+    font-weight: 600;
+    border: 1px solid #C5DFD7;
   }
 
+  /* Stat Card */
   .stat-card {
     @apply glass-card flex flex-col items-center justify-center text-center;
   }
 
+  /* Badges */
   .badge {
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
   }
 }
 
 /* ============================================================
-   Urgency Badge Colors
+   Restrained Civic Color Hierarchy
    ============================================================ */
 
+/* Urgency Pills */
 .urgency-low {
-  @apply bg-emerald-500/20 text-emerald-300 border border-emerald-500/30;
+  background-color: #F2F8F6;
+  color: #2F6F63;
+  border: 1px solid #C5DFD7;
 }
 
 .urgency-medium {
-  @apply bg-amber-500/20 text-amber-300 border border-amber-500/30;
+  background-color: #FDF8EA;
+  color: #A87C1D;
+  border: 1px solid #FDE68A;
 }
 
 .urgency-high {
-  @apply bg-orange-500/20 text-orange-300 border border-orange-500/30;
+  background-color: #FEF7ED;
+  color: #C2782A;
+  border: 1px solid #FED7AA;
 }
 
 .urgency-critical {
-  @apply bg-red-500/20 text-red-300 border border-red-500/30;
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  background-color: #FDF4F3;
+  color: #C45E56;
+  border: 1px solid #F8D0CD;
 }
 
 /* Status Badge Colors */
 .status-open {
-  @apply bg-blue-500/20 text-blue-300 border border-blue-500/30;
+  background-color: #F3F7FD;
+  color: #3C67A3;
+  border: 1px solid #C9DDF6;
 }
 
 .status-assigned, .status-in_progress {
-  @apply bg-yellow-500/20 text-yellow-300 border border-yellow-500/30;
+  background-color: #FDF8EA;
+  color: #A87C1D;
+  border: 1px solid #FDE68A;
 }
 
 .status-resolved, .status-closed {
-  @apply bg-emerald-500/20 text-emerald-300 border border-emerald-500/30;
+  background-color: #F2F8F6;
+  color: #2F6F63;
+  border: 1px solid #C5DFD7;
 }
 
 .status-reopened {
-  @apply bg-red-500/20 text-red-300 border border-red-500/30;
+  background-color: #FDF4F3;
+  color: #C45E56;
+  border: 1px solid #F8D0CD;
 }
 
 /* ============================================================
-   Leaflet Map Overrides (dark theme)
+   Leaflet Map Overrides (Light Civic Theme)
    ============================================================ */
 
 .leaflet-container {
   @apply rounded-xl;
-  background: #0f172a;
-}
-
-.leaflet-tile-pane {
-  filter: brightness(0.7) contrast(1.1) saturate(0.8);
+  background-color: #EEF2EE;
 }
 
 .leaflet-control-zoom a {
-  @apply bg-surface-800 text-white border-white/10;
+  background-color: #FFFFFF !important;
+  color: #1F2927 !important;
+  border-color: #E4EAE4 !important;
+  box-shadow: 0 1px 4px rgba(31, 41, 39, 0.10) !important;
 }
 
 .leaflet-control-zoom a:hover {
-  @apply bg-surface-700;
+  background-color: #F7F9F7 !important;
 }
 
 .leaflet-popup-content-wrapper {
-  @apply bg-surface-800 text-white rounded-xl border border-white/10;
+  background-color: #FFFFFF !important;
+  color: #1F2927 !important;
+  border-radius: 0.75rem !important;
+  border: 1px solid #E4EAE4 !important;
+  box-shadow: 0 8px 24px -4px rgba(47, 111, 99, 0.12) !important;
 }
 
 .leaflet-popup-tip {
-  background: #0f172a;
+  background-color: #FFFFFF !important;
 }
 
 /* ============================================================
-   Scrollbar Styling
+   Scrollbars
    ============================================================ */
 
 ::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -214,31 +273,28 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-white/10 rounded-full;
+  background-color: #D5DDD5;
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-white/20;
+  background-color: #B0C9BF;
 }
 
 /* ============================================================
-   Page Transition Animations
+   Transitions & Animations
    ============================================================ */
 
 .page-enter {
-  animation: fadeIn 0.4s ease-out, slideUp 0.4s ease-out;
+  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1), slideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 }
-
-/* ============================================================
-   Recording Pulse Animation (for voice recorder)
-   ============================================================ */
 
 @keyframes recording-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    box-shadow: 0 0 0 0 rgba(217, 120, 112, 0.6);
   }
   50% {
-    box-shadow: 0 0 0 12px rgba(239, 68, 68, 0);
+    box-shadow: 0 0 0 10px rgba(217, 120, 112, 0);
   }
 }
 

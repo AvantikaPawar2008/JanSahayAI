@@ -1,8 +1,16 @@
-"""FastAPI app entrypoint — mounts all routers and configures middleware."""
-
+import os
+import sys
 import logging
 from contextlib import asynccontextmanager
+
+# Ensure project root is in sys.path so 'from backend...' imports work regardless of cwd
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI
+# pyrefly: ignore [missing-import]
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.routers import (

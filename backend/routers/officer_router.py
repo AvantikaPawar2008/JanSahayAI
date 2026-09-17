@@ -8,7 +8,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Hea
 from typing import Optional
 
 from backend.db.supabase_client import get_supabase_client, get_supabase_user_client
-from backend.services.priority_service import compute_priority_components
+from backend.services.priority_service import compute_priority_components, recalculate_department_priorities
 from backend.models.schemas import OfficerQueueItem, ProofSubmissionResponse
 
 logger = logging.getLogger("civicpulse.officer")
@@ -16,46 +16,90 @@ router = APIRouter(prefix="/api/officer", tags=["Officer"])
 
 
 @router.get("/queue", response_model=list[OfficerQueueItem])
+@router.get("/tickets", response_model=list[OfficerQueueItem])
 async def get_officer_queue(
     department: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    urgency: Optional[str] = Query(default=None),
+    sort: str = Query(default="priority_score_desc"),
     limit: int = Query(default=50, le=200),
     authorization: Optional[str] = Header(default=None),
 ):
     """
     Returns prioritized ticket queue for officers.
-    Relies on PostgreSQL RLS via the user's JWT to filter by department.
+    Applies filters (WHERE department = ... AND status = ... AND urgency = ...) in PostgreSQL
+    first, and then applies deterministic ordering (ORDER BY priority_score DESC, created_at ASC).
+    Recalculates active ticket priority on-demand to prevent stale SLA elapsed times.
     """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authentication required for officer queue")
+
+    # Connect with user's JWT to enforce PostgreSQL RLS officers_view_own_department_only policy
     supabase = get_supabase_user_client(authorization)
 
-    # Resolve officer's department from profile for defense-in-depth
+    # Resolve officer department from token
     officer_dept = department
-    if authorization:
-        token_str = authorization.replace("Bearer ", "").strip()
-        try:
-            admin_db = get_supabase_client()
-            user_res = admin_db.auth.get_user(token_str)
-            if user_res and user_res.user:
-                p = admin_db.table("profiles").select("department, role").eq("id", str(user_res.user.id)).single().execute()
-                if p.data and p.data.get("role") == "officer" and p.data.get("department"):
-                    officer_dept = p.data["department"]
-        except Exception as e:
-            logger.debug(f"Could not resolve officer department from token: {e}")
+    user_dept = None
+    token_str = authorization.replace("Bearer ", "").strip()
+    try:
+        admin_db = get_supabase_client()
+        user_res = admin_db.auth.get_user(token_str)
+        if user_res and user_res.user:
+            p = admin_db.table("profiles").select("department, role").eq("id", str(user_res.user.id)).single().execute()
+            if p.data:
+                role = p.data.get("role")
+                user_dept = p.data.get("department")
+                if role == "officer" and user_dept:
+                    # If officer specifically requested a department filter, respect it; otherwise default to their department
+                    officer_dept = department if department else user_dept
+                elif role == "admin":
+                    officer_dept = department
+    except Exception as e:
+        logger.debug(f"Could not resolve officer department from token: {e}")
 
-    query = (
-        supabase.table("master_tickets")
-        .select("*")
-        .in_("status", ["OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED"])
-    )
+    # 2d: Recalculate priority scores on-demand so SLA-elapsed time is never stale
+    try:
+        recalculate_department_priorities(department=officer_dept, limit=limit)
+    except Exception as e:
+        logger.warning(f"Failed to run on-demand priority recalculation: {e}")
 
+    # Build query: Filters (WHERE ...) are applied in PostgreSQL first
+    query = supabase.table("master_tickets").select("*")
+
+    # Filter by department (PostgreSQL RLS also enforces this)
     if officer_dept:
         query = query.eq("department", officer_dept)
 
-    result = query.order("created_at", desc=True).limit(limit).execute()
+    # Filter by status (AND logic)
+    if status and status.upper() != "ALL":
+        query = query.eq("status", status.upper())
+    else:
+        # Default active tickets if not explicitly specified or ALL
+        query = query.in_("status", ["OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED"])
+
+    # Filter by urgency (AND logic)
+    if urgency and urgency.upper() != "ALL":
+        query = query.eq("urgency", urgency.upper())
+
+    # 2a & 2b: Sort in PostgreSQL AFTER filters, with deterministic tiebreaker (created_at ASC)
+    if sort == "priority_score_asc":
+        query = query.order("priority_score", desc=False).order("created_at", desc=False)
+    elif sort == "created_at_desc":
+        query = query.order("created_at", desc=True)
+    elif sort == "created_at_asc":
+        query = query.order("created_at", desc=False)
+    elif sort in ("department_asc", "department_priority"):
+        query = query.order("department", desc=False).order("priority_score", desc=True).order("created_at", desc=False)
+    elif sort == "department_desc":
+        query = query.order("department", desc=True).order("priority_score", desc=True).order("created_at", desc=False)
+    else:  # default: priority_score_desc with oldest-first tiebreaker
+        query = query.order("priority_score", desc=True).order("created_at", desc=False)
+
+    result = query.limit(limit).execute()
 
     queue_items = []
 
     for t in (result.data or []):
-        # Use stored priority components if present, else compute on the fly
         sla_comp = t.get("priority_sla_component")
         urg_comp = t.get("priority_urgency_component")
         dup_comp = t.get("priority_duplicate_component")
@@ -76,11 +120,13 @@ async def get_officer_queue(
             OfficerQueueItem(
                 id=t["id"],
                 category=t.get("category", ""),
+                sub_category=t.get("sub_category"),
                 department=t.get("department"),
                 urgency=t.get("urgency"),
                 status=t.get("status", "OPEN"),
                 lat=t["lat"],
                 lng=t["lng"],
+                address_text=t.get("address_text"),
                 upvote_count=t.get("upvote_count", 1),
                 description=t.get("description"),
                 created_at=t.get("created_at"),
@@ -94,8 +140,28 @@ async def get_officer_queue(
             )
         )
 
-    # Sort by priority score descending (highest priority first)
-    queue_items.sort(key=lambda x: x.priority_score, reverse=True)
+    # Department-accurate deterministic final ordering (incorporating any live recalculated scores)
+    if sort == "priority_score_asc":
+        queue_items.sort(key=lambda x: (x.priority_score, x.created_at or ""))
+    elif sort == "created_at_desc":
+        queue_items.sort(key=lambda x: x.created_at or "", reverse=True)
+    elif sort == "created_at_asc":
+        queue_items.sort(key=lambda x: x.created_at or "")
+    elif sort in ("department_asc", "department_priority"):
+        # Stable sort: first by priority score desc, then grouped by department A->Z
+        queue_items.sort(key=lambda x: (-x.priority_score, x.created_at or ""))
+        queue_items.sort(key=lambda x: x.department or "")
+    elif sort == "department_desc":
+        # Stable sort: first by priority score desc, then grouped by department Z->A
+        queue_items.sort(key=lambda x: (-x.priority_score, x.created_at or ""))
+        queue_items.sort(key=lambda x: x.department or "", reverse=True)
+    elif sort == "my_department_first" and user_dept:
+        # Officer's department tickets first, then other departments (each sorted by priority score)
+        queue_items.sort(key=lambda x: (-x.priority_score, x.created_at or ""))
+        queue_items.sort(key=lambda x: (0 if x.department == user_dept else 1))
+    else:
+        # Default: priority_score_desc with oldest-first tiebreaker
+        queue_items.sort(key=lambda x: (-x.priority_score, x.created_at or ""))
 
     return queue_items
 
@@ -106,9 +172,12 @@ async def get_officer_ticket_detail(
     authorization: Optional[str] = Header(default=None),
 ):
     """Returns full ticket details with SOP steps and verification photos for an officer."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
     supabase = get_supabase_user_client(authorization)
 
-    # Get ticket
+    # Get ticket — RLS strictly limits this to officer's own department
     ticket_result = (
         supabase.table("master_tickets")
         .select("*")

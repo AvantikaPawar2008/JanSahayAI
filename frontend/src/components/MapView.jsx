@@ -19,10 +19,10 @@ L.Icon.Default.mergeOptions({
 // Custom urgency-colored marker icons
 const createUrgencyIcon = (urgency) => {
   const colors = {
-    LOW: '#10b981',
-    MEDIUM: '#f59e0b',
-    HIGH: '#f97316',
-    CRITICAL: '#ef4444',
+    LOW: '#2F6F63',
+    MEDIUM: '#D99B41',
+    HIGH: '#E07A5F',
+    CRITICAL: '#D97870',
   }
   const color = colors[urgency] || colors.MEDIUM
 
@@ -83,7 +83,7 @@ export default function MapView({
   className = '',
 }) {
   return (
-    <div className={`rounded-xl overflow-hidden border border-white/10 ${className}`} style={{ height }}>
+    <div className={`rounded-2xl overflow-hidden border border-ivory-300 shadow-card ${className}`} style={{ height }}>
       <MapContainer
         center={center}
         zoom={zoom}

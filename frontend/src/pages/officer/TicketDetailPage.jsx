@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload } from 'lucide-react'
+import { ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload, MapPin } from 'lucide-react'
 import SOPStepsList from '../../components/SOPStepsList'
 import PhotoCapture from '../../components/PhotoCapture'
 import GpsBadge from '../../components/GpsBadge'
@@ -102,14 +102,14 @@ export default function TicketDetailPage() {
   if (loading) {
     return (
       <div className="flex justify-center py-20">
-        <Loader2 className="w-8 h-8 text-civic-400 animate-spin" />
+        <Loader2 className="w-8 h-8 text-civic-500 animate-spin" />
       </div>
     )
   }
 
   if (!data) {
     return (
-      <div className="text-center py-20 text-white/30">
+      <div className="text-center py-20 text-charcoal-400">
         <p>Ticket not found</p>
       </div>
     )
@@ -125,7 +125,7 @@ export default function TicketDetailPage() {
       {/* Back button */}
       <button
         onClick={() => navigate('/officer')}
-        className="flex items-center gap-2 text-sm text-white/50 hover:text-white/70 mb-6 transition-colors"
+        className="flex items-center gap-2 text-sm text-charcoal-500 hover:text-charcoal-800 mb-6 transition-colors font-medium"
       >
         <ArrowLeft className="w-4 h-4" /> Back to Queue
       </button>
@@ -142,20 +142,34 @@ export default function TicketDetailPage() {
                 {ticket.status?.replace(/_/g, ' ')}
               </span>
             </div>
-            <h1 className="text-xl font-bold text-white/90">{ticket.category}</h1>
-            <p className="text-sm text-white/40 mt-1">{ticket.department}</p>
+            <h1 className="text-xl font-bold text-charcoal-900">{ticket.category}</h1>
+            <p className="text-sm text-charcoal-500 mt-0.5">{ticket.department}</p>
           </div>
-          <div className="text-right text-xs text-white/30">
-            <p>Reports: {ticket.upvote_count}</p>
-            <p className="font-mono mt-1">{ticket.id?.slice(0, 8)}</p>
+          <div className="text-right text-xs text-charcoal-400">
+            <p className="font-medium text-charcoal-700">Reports: {ticket.upvote_count}</p>
+            <p className="font-mono mt-0.5 text-charcoal-400">ID: {ticket.id?.slice(0, 8)}</p>
           </div>
         </div>
 
         {ticket.description && (
-          <div className="p-3 rounded-xl bg-white/5 border border-white/5 mb-4">
-            <p className="text-sm text-white/70">{ticket.description}</p>
+          <div className="p-3.5 rounded-xl bg-ivory-100 border border-ivory-300 mb-4">
+            <p className="text-sm text-charcoal-700 leading-relaxed">{ticket.description}</p>
           </div>
         )}
+
+        {/* Prominent Address Text */}
+        <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-civic-50 border border-civic-200 mb-4">
+          <MapPin className="w-4 h-4 text-civic-600 mt-0.5 flex-shrink-0" />
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-civic-800 uppercase tracking-wide">Incident Address</p>
+            <p className="text-sm font-semibold text-charcoal-900 mt-0.5">
+              {ticket.address_text || (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(5)}, ${ticket.lng.toFixed(5)}` : 'Location Pending')}
+            </p>
+            <p className="text-[11px] text-charcoal-500 font-mono mt-0.5">
+              GPS: {ticket.lat?.toFixed(5)}, {ticket.lng?.toFixed(5)}
+            </p>
+          </div>
+        </div>
 
         {/* GPS */}
         <GpsBadge lat={lat} lng={lng} accuracy={accuracy} loading={gpsLoading} error={gpsError} onRefresh={refreshGps} />
@@ -166,7 +180,7 @@ export default function TicketDetailPage() {
         center={[ticket.lat, ticket.lng]}
         zoom={17}
         markers={[{ lat: ticket.lat, lng: ticket.lng, urgency: ticket.urgency, category: ticket.category }]}
-        height="200px"
+        height="220px"
         className="mb-6"
       />
 
@@ -186,17 +200,17 @@ export default function TicketDetailPage() {
 
       {/* Photo Submission */}
       <div className="glass-card mb-6">
-        <h3 className="text-sm font-semibold text-white/70 uppercase tracking-wide mb-4">
-          Proof of Work Photos
+        <h3 className="text-sm font-bold text-charcoal-800 uppercase tracking-wide mb-4">
+          Proof of Work Verification
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {/* Before Photo */}
           <div>
-            <p className="text-xs text-white/40 mb-2">📸 Before Photo</p>
+            <p className="text-xs font-semibold text-charcoal-600 mb-2">📸 Before Work Photo</p>
             {hasBeforePhoto ? (
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-sm text-emerald-300 flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4" /> Before photo uploaded
+              <div className="p-3 rounded-xl bg-civic-50 border border-civic-200 text-sm text-civic-800 flex items-center gap-2 font-medium">
+                <CheckCircle2 className="w-4 h-4 text-civic-600" /> Before photo uploaded
               </div>
             ) : (
               <div>
@@ -220,10 +234,10 @@ export default function TicketDetailPage() {
 
           {/* After Photo */}
           <div>
-            <p className="text-xs text-white/40 mb-2">📸 After Photo</p>
+            <p className="text-xs font-semibold text-charcoal-600 mb-2">📸 After Work Photo</p>
             {hasAfterPhoto ? (
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-sm text-emerald-300 flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4" /> After photo uploaded
+              <div className="p-3 rounded-xl bg-civic-50 border border-civic-200 text-sm text-civic-800 flex items-center gap-2 font-medium">
+                <CheckCircle2 className="w-4 h-4 text-civic-600" /> After photo uploaded
               </div>
             ) : (
               <div>
@@ -256,7 +270,7 @@ export default function TicketDetailPage() {
             {verifying ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                Running AI Verification...
+                Running Anti-Fraud Verification...
               </>
             ) : (
               <>
@@ -271,22 +285,22 @@ export default function TicketDetailPage() {
         {verifyResult && (
           <div className={`mt-4 p-4 rounded-xl border animate-slide-up ${
             verifyResult.overall_passed
-              ? 'bg-emerald-500/10 border-emerald-500/20'
-              : 'bg-red-500/10 border-red-500/20'
+              ? 'bg-civic-50 border-civic-200 text-civic-900'
+              : 'bg-coral-50 border-coral-200 text-coral-900'
           }`}>
             <div className="flex items-center gap-2 mb-3">
               {verifyResult.overall_passed ? (
-                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                <CheckCircle2 className="w-5 h-5 text-civic-600" />
               ) : (
-                <AlertTriangle className="w-5 h-5 text-red-400" />
+                <AlertTriangle className="w-5 h-5 text-coral-600" />
               )}
-              <span className={`font-semibold ${
-                verifyResult.overall_passed ? 'text-emerald-300' : 'text-red-300'
+              <span className={`font-bold ${
+                verifyResult.overall_passed ? 'text-civic-800' : 'text-coral-700'
               }`}>
                 {verifyResult.overall_passed ? 'Verification Passed' : 'Verification Failed'}
               </span>
             </div>
-            <div className="space-y-1 text-xs text-white/60">
+            <div className="space-y-1 text-xs text-charcoal-600 font-medium">
               <p>🗺️ Geofence: {verifyResult.geofence_passed ? '✅ Passed' : '❌ Failed'}</p>
               <p>📍 Same Location: {verifyResult.same_location ? '✅ Yes' : '❌ No'}</p>
               <p>🔧 Defect Resolved: {verifyResult.defect_resolved ? '✅ Yes' : '❌ No'}</p>

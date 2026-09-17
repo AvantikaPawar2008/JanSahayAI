@@ -13,6 +13,7 @@ import {
   ArrowRight,
   ShieldAlert,
   Percent,
+  MapPin,
 } from 'lucide-react'
 import useAuth from '../../hooks/useAuth'
 import { API_BASE } from '../../supabaseClient'
@@ -136,7 +137,7 @@ export default function AdminDashboardPage() {
   if (loading) {
     return (
       <div className="flex justify-center py-24">
-        <Loader2 className="w-8 h-8 text-civic-400 animate-spin" />
+        <Loader2 className="w-8 h-8 text-civic-600 animate-spin" />
       </div>
     )
   }
@@ -146,43 +147,37 @@ export default function AdminDashboardPage() {
       label: 'Total Tickets',
       value: metrics?.total_tickets || 0,
       icon: TrendingUp,
-      color: 'from-civic-500/20 to-civic-600/10 border-civic-500/30',
-      textColor: 'text-civic-400',
+      badgeBg: 'bg-civic-50 text-civic-700 border-civic-200',
     },
     {
       label: 'Open',
       value: metrics?.open_tickets || 0,
       icon: Clock,
-      color: 'from-blue-500/20 to-blue-600/10 border-blue-500/30',
-      textColor: 'text-blue-400',
+      badgeBg: 'bg-blue-50 text-blue-700 border-blue-200',
     },
     {
       label: 'In Progress',
       value: metrics?.in_progress_tickets || 0,
       icon: Users,
-      color: 'from-amber-500/20 to-amber-600/10 border-amber-500/30',
-      textColor: 'text-amber-400',
+      badgeBg: 'bg-amber-50 text-amber-700 border-amber-200',
     },
     {
       label: 'Resolved',
       value: metrics?.resolved_tickets || 0,
       icon: CheckCircle2,
-      color: 'from-emerald-500/20 to-emerald-600/10 border-emerald-500/30',
-      textColor: 'text-emerald-400',
+      badgeBg: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     },
     {
       label: 'Critical Priority',
       value: metrics?.critical_tickets || 0,
       icon: AlertTriangle,
-      color: 'from-red-500/20 to-red-600/10 border-red-500/30',
-      textColor: 'text-red-400',
+      badgeBg: 'bg-coral-50 text-coral-700 border-coral-200',
     },
     {
       label: 'Active Hotspots',
       value: metrics?.active_hotspots || 0,
       icon: Zap,
-      color: 'from-purple-500/20 to-purple-600/10 border-purple-500/30',
-      textColor: 'text-purple-400',
+      badgeBg: 'bg-purple-50 text-purple-700 border-purple-200',
     },
   ]
 
@@ -191,38 +186,46 @@ export default function AdminDashboardPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-3xl font-bold gradient-text">Executive Dashboard</h1>
-          <p className="text-white/50 text-sm mt-1">
-            {metrics?.tickets_today || 0} tickets submitted today · Headline metrics & SLA compliance
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-civic-50 text-civic-700 border border-civic-200">
+              Civic Operations
+            </span>
+            <span className="text-xs text-charcoal-400 font-mono">Realtime Telemetry</span>
+          </div>
+          <h1 className="text-3xl font-extrabold text-charcoal-900 tracking-tight">Executive Dashboard</h1>
+          <p className="text-charcoal-500 text-sm mt-1">
+            <strong className="text-charcoal-800 font-semibold">{metrics?.tickets_today || 0}</strong> tickets submitted today · Headline metrics & SLA compliance
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <button onClick={fetchMetrics} className="btn-secondary px-3 py-2" title="Refresh metrics">
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className="w-4 h-4 text-charcoal-600" />
           </button>
           <button
             onClick={runHotspotDetection}
             disabled={detecting}
-            className="btn-secondary text-sm flex items-center gap-1.5"
+            className="btn-secondary text-sm flex items-center gap-1.5 font-medium"
           >
-            {detecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4 text-amber-400" />}
+            {detecting ? <Loader2 className="w-4 h-4 animate-spin text-civic-600" /> : <Zap className="w-4 h-4 text-amber-500" />}
             Detect Clusters
           </button>
-          <Link to="/admin/hotspots" className="btn-primary text-sm flex items-center gap-1.5">
-            <Flame className="w-4 h-4 text-red-300" />
+          <Link to="/admin/hotspots" className="btn-primary text-sm flex items-center gap-1.5 shadow-sm">
+            <Flame className="w-4 h-4 text-white" />
             Open Hotspot Map
-            <ArrowRight className="w-3.5 h-3.5" />
+            <ArrowRight className="w-3.5 h-3.5 ml-0.5" />
           </Link>
         </div>
       </div>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
-        {statCards.map(({ label, value, icon: Icon, color, textColor }) => (
-          <div key={label} className={`rounded-xl border bg-gradient-to-br ${color} p-4 text-center animate-fade-in`}>
-            <Icon className={`w-5 h-5 ${textColor} mx-auto mb-2 opacity-70`} />
-            <p className={`text-2xl font-bold ${textColor}`}>{value}</p>
-            <p className="text-xs text-white/40 mt-1">{label}</p>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5 mb-8">
+        {statCards.map(({ label, value, icon: Icon, badgeBg }) => (
+          <div key={label} className="bg-white rounded-2xl border border-ivory-300 shadow-card hover:shadow-card-hover transition-all duration-200 p-4 text-center animate-fade-in">
+            <div className={`w-9 h-9 rounded-xl ${badgeBg} border flex items-center justify-center mx-auto mb-2.5`}>
+              <Icon className="w-4 h-4" />
+            </div>
+            <p className="text-2xl font-bold font-mono text-charcoal-900">{value}</p>
+            <p className="text-xs text-charcoal-500 font-medium mt-0.5">{label}</p>
           </div>
         ))}
       </div>
@@ -230,51 +233,53 @@ export default function AdminDashboardPage() {
       {/* SLA Compliance Section + Hotspot CTA Banner */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         {/* SLA Health Card */}
-        <div className="glass-card lg:col-span-1 p-6 border-white/10">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-white/80 uppercase tracking-wide flex items-center gap-2">
-              <ShieldAlert className="w-4 h-4 text-amber-400" />
-              SLA Breach Compliance
-            </h2>
-            <span className="text-xs text-white/40">Target &lt; 5%</span>
+        <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-bold text-charcoal-700 uppercase tracking-wider flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-500" />
+                SLA Breach Compliance
+              </h2>
+              <span className="text-xs px-2 py-0.5 rounded-md bg-ivory-100 text-charcoal-500 font-medium border border-ivory-300">Target &lt; 5%</span>
+            </div>
+
+            <div className="flex items-baseline gap-2.5 mb-2">
+              <span className={`text-3xl font-extrabold font-mono ${(metrics?.sla_breach_rate || 0) > 10 ? 'text-coral-600' : 'text-amber-600'}`}>
+                {metrics?.sla_breach_rate ?? 0}%
+              </span>
+              <span className="text-xs text-charcoal-500 font-medium">Breach Rate</span>
+            </div>
+
+            <p className="text-xs text-charcoal-600 leading-relaxed mb-5">
+              <strong className="text-charcoal-900 font-semibold">{metrics?.sla_breached_tickets ?? 0}</strong> active tickets currently exceed standard municipal resolution response SLAs.
+            </p>
           </div>
 
-          <div className="flex items-baseline gap-2 mb-3">
-            <span className="text-3xl font-bold text-amber-400 font-mono">
-              {metrics?.sla_breach_rate ?? 0}%
-            </span>
-            <span className="text-xs text-white/50">Breach Rate</span>
-          </div>
-
-          <p className="text-xs text-white/50 mb-4">
-            <strong>{metrics?.sla_breached_tickets ?? 0}</strong> active tickets currently exceed standard municipal resolution response SLAs.
-          </p>
-
-          <div className="w-full h-3 rounded-full bg-white/5 overflow-hidden p-0.5 border border-white/5">
+          <div className="w-full h-3 rounded-full bg-ivory-200 overflow-hidden p-0.5 border border-ivory-300/80">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-amber-500 to-red-500 transition-all duration-700"
+              className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-amber-500 to-coral-500 transition-all duration-700"
               style={{ width: `${Math.min(100, Math.max(5, metrics?.sla_breach_rate || 0))}%` }}
             />
           </div>
         </div>
 
         {/* Hotspot Map Banner */}
-        <div className="glass-card lg:col-span-2 p-6 border-red-500/20 bg-gradient-to-br from-red-500/10 via-surface-800 to-purple-900/10 flex flex-col justify-between">
+        <div className="bg-gradient-to-br from-coral-50/70 via-white to-ivory-100 rounded-2xl border border-coral-200/80 shadow-card p-6 flex flex-col justify-between">
           <div>
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-500/20 text-red-300 text-xs font-semibold mb-3 border border-red-500/30">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-coral-100 text-coral-700 text-xs font-semibold mb-3 border border-coral-200">
               <Flame className="w-3.5 h-3.5" />
               Live Geospatial Intelligence
             </div>
-            <h3 className="text-xl font-bold text-white mb-2">
+            <h3 className="text-xl font-bold text-charcoal-900 mb-2">
               {metrics?.active_hotspots || 0} Critical Civic Hotspots Identified
             </h3>
-            <p className="text-sm text-white/60 max-w-xl">
+            <p className="text-sm text-charcoal-600 max-w-xl leading-relaxed">
               DBSCAN spatial clustering groups nearby complaints to isolate systemic infrastructure failures like water main bursts and pothole clusters before citizen escalations multiply.
             </p>
           </div>
 
-          <div className="mt-6 flex items-center gap-3">
-            <Link to="/admin/hotspots" className="btn-primary text-sm flex items-center gap-2">
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <Link to="/admin/hotspots" className="btn-primary text-sm flex items-center gap-2 shadow-sm">
               Explore Full Hotspot Heatmap
               <ArrowRight className="w-4 h-4" />
             </Link>
@@ -287,20 +292,20 @@ export default function AdminDashboardPage() {
 
       {/* Misclassified Tickets Review Panel */}
       {misclassified.length > 0 && (
-        <div className="glass-card p-6 border-amber-500/30 mb-8 bg-gradient-to-br from-amber-500/10 via-surface-900 to-surface-800 animate-slide-up">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+        <div className="bg-gradient-to-br from-amber-50/80 via-white to-ivory-100 rounded-2xl border border-amber-200/90 shadow-card p-6 mb-8 animate-slide-up">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-amber-100 text-amber-700 border border-amber-200">
                 <AlertTriangle className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <h2 className="text-base font-bold text-charcoal-900 flex items-center gap-2">
                   Misclassified Complaints Requiring Admin Review
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 font-semibold border border-red-500/30">
+                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-coral-100 text-coral-700 font-semibold border border-coral-200">
                     {misclassified.length} Pending
                   </span>
                 </h2>
-                <p className="text-xs text-white/50">
+                <p className="text-xs text-charcoal-500">
                   These complaints could not be automatically routed with high confidence or received a fallback assignment. Reassign them to the correct department queue below.
                 </p>
               </div>
@@ -308,28 +313,34 @@ export default function AdminDashboardPage() {
             <button
               onClick={fetchMisclassified}
               disabled={loadingMisclassified}
-              className="btn-secondary px-3 py-1.5 text-xs flex items-center gap-1.5"
+              className="btn-secondary px-3 py-1.5 text-xs flex items-center gap-1.5 self-end sm:self-auto"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingMisclassified ? 'animate-spin' : ''}`} />
               Refresh
             </button>
           </div>
 
-          <div className="divide-y divide-white/5 space-y-3">
+          <div className="divide-y divide-ivory-200 space-y-3">
             {misclassified.map((ticket) => (
               <div
                 key={ticket.id}
-                className="pt-3 first:pt-0 flex flex-col md:flex-row md:items-center justify-between gap-4 p-3.5 rounded-xl bg-white/5 border border-white/10"
+                className="pt-3 first:pt-0 flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-xl bg-white border border-ivory-300 shadow-sm"
               >
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs font-bold text-white/90 truncate">{ticket.category}</span>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                    <span className="text-xs font-bold text-charcoal-900 truncate">{ticket.category}</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-medium">
                       Current: {ticket.department || 'Unassigned'}
                     </span>
-                    <span className="text-[10px] text-white/40 font-mono">ID: {ticket.id.slice(0, 8)}...</span>
+                    <span className="text-[11px] text-charcoal-400 font-mono">ID: {ticket.id.slice(0, 8)}...</span>
                   </div>
-                  <p className="text-xs text-white/60 line-clamp-2">{ticket.description}</p>
+                  <p className="text-xs text-charcoal-600 line-clamp-2 leading-relaxed">{ticket.description}</p>
+                  <div className="flex items-center gap-1.5 text-[11px] text-civic-700 font-medium mt-2">
+                    <MapPin className="w-3.5 h-3.5 text-civic-600 flex-shrink-0" />
+                    <span className="truncate">
+                      {ticket.address_text || (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(4)}, ${ticket.lng.toFixed(4)}` : 'Location Pending')}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -338,10 +349,10 @@ export default function AdminDashboardPage() {
                     onChange={(e) =>
                       setTargetDepartments({ ...targetDepartments, [ticket.id]: e.target.value })
                     }
-                    className="input-field text-xs py-1.5 px-3 min-w-[200px]"
+                    className="input-field text-xs py-1.5 px-3 min-w-[200px] bg-white border-ivory-300 text-charcoal-900"
                   >
                     {departmentsList.map((d) => (
-                      <option key={d} value={d} className="bg-surface-900 text-white">
+                      <option key={d} value={d} className="bg-white text-charcoal-900">
                         {d}
                       </option>
                     ))}
@@ -349,7 +360,7 @@ export default function AdminDashboardPage() {
                   <button
                     onClick={() => handleReassign(ticket.id)}
                     disabled={reassigningId === ticket.id}
-                    className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1 flex-shrink-0"
+                    className="btn-primary text-xs px-3.5 py-1.5 flex items-center gap-1 flex-shrink-0 shadow-sm"
                   >
                     {reassigningId === ticket.id ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -365,53 +376,53 @@ export default function AdminDashboardPage() {
       )}
 
       {/* Per-Department Queue & Resolution Breakdown Table */}
-      <div className="glass-card p-6 border-white/10 mb-8">
-        <div className="flex items-center justify-between mb-4">
+      <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6 mb-8">
+        <div className="flex items-center justify-between mb-5">
           <div>
-            <h2 className="text-sm font-semibold text-white/80 uppercase tracking-wide">
+            <h2 className="text-xs font-bold text-charcoal-700 uppercase tracking-wider">
               Department Performance & Queue Breakdown
             </h2>
-            <p className="text-xs text-white/40 mt-0.5">
+            <p className="text-xs text-charcoal-500 mt-0.5">
               Live status breakdown and resolution progress across municipal teams
             </p>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-white/70">
-            <thead className="border-b border-white/10 text-white/40 uppercase text-[10px] font-semibold">
+        <div className="overflow-x-auto rounded-xl border border-ivory-200">
+          <table className="w-full text-left text-xs text-charcoal-700">
+            <thead className="bg-ivory-100/70 border-b border-ivory-200 text-charcoal-500 uppercase text-[10px] font-bold">
               <tr>
-                <th className="py-2.5 px-3">Department</th>
-                <th className="py-2.5 px-3 text-center">Open</th>
-                <th className="py-2.5 px-3 text-center">In Progress</th>
-                <th className="py-2.5 px-3 text-center">Resolved</th>
-                <th className="py-2.5 px-3 text-center">Total</th>
-                <th className="py-2.5 px-3">Resolution Progress</th>
+                <th className="py-3 px-3.5">Department</th>
+                <th className="py-3 px-3.5 text-center">Open</th>
+                <th className="py-3 px-3.5 text-center">In Progress</th>
+                <th className="py-3 px-3.5 text-center">Resolved</th>
+                <th className="py-3 px-3.5 text-center">Total</th>
+                <th className="py-3 px-3.5">Resolution Progress</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5">
+            <tbody className="divide-y divide-ivory-200">
               {(metrics?.department_breakdown || []).map((row) => {
                 const total = row.total || 0
                 const resolvedPct = total > 0 ? Math.round((row.resolved / total) * 100) : 0
                 return (
-                  <tr key={row.department} className="hover:bg-white/[0.02] transition-colors">
-                    <td className="py-3 px-3 font-medium text-white flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-civic-400" />
+                  <tr key={row.department} className="hover:bg-ivory-50/80 transition-colors">
+                    <td className="py-3.5 px-3.5 font-semibold text-charcoal-900 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-civic-500" />
                       {row.department}
                     </td>
-                    <td className="py-3 px-3 text-center font-mono text-blue-400 font-bold">{row.open}</td>
-                    <td className="py-3 px-3 text-center font-mono text-amber-400 font-bold">{row.in_progress}</td>
-                    <td className="py-3 px-3 text-center font-mono text-emerald-400 font-bold">{row.resolved}</td>
-                    <td className="py-3 px-3 text-center font-mono text-white/90 font-bold">{total}</td>
-                    <td className="py-3 px-3 w-48">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-2 rounded-full bg-white/5 overflow-hidden">
+                    <td className="py-3.5 px-3.5 text-center font-mono text-blue-700 font-bold">{row.open}</td>
+                    <td className="py-3.5 px-3.5 text-center font-mono text-amber-700 font-bold">{row.in_progress}</td>
+                    <td className="py-3.5 px-3.5 text-center font-mono text-emerald-700 font-bold">{row.resolved}</td>
+                    <td className="py-3.5 px-3.5 text-center font-mono text-charcoal-900 font-bold">{total}</td>
+                    <td className="py-3.5 px-3.5 w-48">
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex-1 h-2 rounded-full bg-ivory-200 overflow-hidden">
                           <div
-                            className="h-full rounded-full bg-gradient-to-r from-civic-500 to-emerald-500"
+                            className="h-full rounded-full bg-gradient-to-r from-civic-600 to-sage-500"
                             style={{ width: `${resolvedPct}%` }}
                           />
                         </div>
-                        <span className="text-[10px] font-mono text-white/40 w-8">{resolvedPct}%</span>
+                        <span className="text-[11px] font-mono text-charcoal-500 w-8">{resolvedPct}%</span>
                       </div>
                     </td>
                   </tr>
@@ -425,8 +436,8 @@ export default function AdminDashboardPage() {
       {/* Department Breakdown & Urgency Breakdown */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Department Breakdown */}
-        <div className="glass-card p-6 border-white/10">
-          <h2 className="text-sm font-semibold text-white/70 uppercase tracking-wide mb-4">
+        <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6">
+          <h2 className="text-xs font-bold text-charcoal-700 uppercase tracking-wider mb-4">
             Tickets by Department
           </h2>
           <div className="space-y-4">
@@ -436,14 +447,14 @@ export default function AdminDashboardPage() {
               return (
                 <div key={dept}>
                   <div className="flex justify-between text-xs mb-1.5">
-                    <span className="text-white/80 font-medium truncate">{dept}</span>
-                    <span className="text-white/40 font-mono">
+                    <span className="text-charcoal-800 font-semibold truncate">{dept}</span>
+                    <span className="text-charcoal-500 font-mono">
                       {count} ({pct}%)
                     </span>
                   </div>
-                  <div className="w-full h-2.5 rounded-full bg-white/5 overflow-hidden">
+                  <div className="w-full h-2.5 rounded-full bg-ivory-200 overflow-hidden">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-civic-500 to-purple-500 transition-all duration-700"
+                      className="h-full rounded-full bg-gradient-to-r from-civic-600 to-sage-500 transition-all duration-700"
                       style={{ width: `${pct}%` }}
                     />
                   </div>
@@ -451,33 +462,33 @@ export default function AdminDashboardPage() {
               )
             })}
             {Object.keys(metrics?.tickets_by_department || {}).length === 0 && (
-              <p className="text-white/30 text-sm text-center py-6">No department tickets submitted yet</p>
+              <p className="text-charcoal-400 text-sm text-center py-6">No department tickets submitted yet</p>
             )}
           </div>
         </div>
 
         {/* Urgency Distribution */}
-        <div className="glass-card p-6 border-white/10">
-          <h2 className="text-sm font-semibold text-white/70 uppercase tracking-wide mb-4">
+        <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6">
+          <h2 className="text-xs font-bold text-charcoal-700 uppercase tracking-wider mb-4">
             Urgency Distribution
           </h2>
           <div className="grid grid-cols-2 gap-3 mb-6">
             {[
-              { key: 'CRITICAL', label: 'Critical', color: 'from-red-500/20 to-red-600/10 border-red-500/30', text: 'text-red-400' },
-              { key: 'HIGH', label: 'High', color: 'from-orange-500/20 to-orange-600/10 border-orange-500/30', text: 'text-orange-400' },
-              { key: 'MEDIUM', label: 'Medium', color: 'from-amber-500/20 to-amber-600/10 border-amber-500/30', text: 'text-amber-400' },
-              { key: 'LOW', label: 'Low', color: 'from-emerald-500/20 to-emerald-600/10 border-emerald-500/30', text: 'text-emerald-400' },
-            ].map(({ key, label, color, text }) => (
-              <div key={key} className={`rounded-xl border bg-gradient-to-br ${color} p-3.5 text-center`}>
-                <p className={`text-xl font-bold font-mono ${text}`}>
+              { key: 'CRITICAL', label: 'Critical', bg: 'bg-coral-50 border-coral-200 text-coral-700' },
+              { key: 'HIGH', label: 'High', bg: 'bg-orange-50 border-orange-200 text-orange-700' },
+              { key: 'MEDIUM', label: 'Medium', bg: 'bg-amber-50 border-amber-200 text-amber-800' },
+              { key: 'LOW', label: 'Low', bg: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+            ].map(({ key, label, bg }) => (
+              <div key={key} className={`rounded-xl border ${bg} p-3.5 text-center`}>
+                <p className="text-xl font-bold font-mono">
                   {metrics?.tickets_by_urgency?.[key] || 0}
                 </p>
-                <p className="text-xs text-white/50 mt-1">{label}</p>
+                <p className="text-xs opacity-80 mt-0.5 font-medium">{label}</p>
               </div>
             ))}
           </div>
 
-          <div className="p-3.5 rounded-xl bg-white/5 border border-white/5 text-xs text-white/40">
+          <div className="p-3.5 rounded-xl bg-ivory-100 border border-ivory-300 text-xs text-charcoal-600 leading-relaxed">
             💡 Triage SLA standard: Critical issues are assigned in &lt;15m; High priority within 2 hours.
           </div>
         </div>

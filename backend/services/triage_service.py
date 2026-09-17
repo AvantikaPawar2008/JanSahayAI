@@ -58,8 +58,15 @@ async def triage_complaint(complaint_text: str, lat: float, lng: float) -> Triag
     client = get_groq_client()
     settings = get_settings()
 
+    # Defensive sanitization to prevent delimiter breakout
+    sanitized_text = (
+        complaint_text.replace("</citizen_complaint>", "")
+        .replace("<citizen_complaint>", "")
+        .strip()
+    )
+
     prompt = TRIAGE_PROMPT.format(
-        complaint_text=complaint_text,
+        complaint_text=sanitized_text,
         lat=lat,
         lng=lng,
     )

@@ -94,28 +94,34 @@ def calculate_priority_score(
     return round(score, 3)
 
 
-def reverse_geocode(lat: float, lng: float) -> str:
+import httpx
+import time
+
+_last_call_time = 0.0
+
+
+async def reverse_geocode(lat: float, lng: float) -> str:
     """
-    Converts latitude and longitude to a human-readable street address
-    using OpenStreetMap Nominatim API.
+    Converts lat/lng into a human-readable address string using OpenStreetMap Nominatim.
+    Respects Nominatim's 1 req/sec usage policy.
+    Returns a fallback 'lat, lng' string if lookup fails or times out.
     """
-    import urllib.request
-    import json
-    
-    url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}&zoom=18&addressdetails=1"
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "CivicPulse/1.0 (Municipal Resolution Platform)"}
-    )
+    global _last_call_time
+    # Respect Nominatim's 1 req/sec usage policy
+    elapsed = time.time() - _last_call_time
+    if elapsed < 1:
+        time.sleep(1 - elapsed)
+
     try:
-        with urllib.request.urlopen(req, timeout=4) as response:
-            if response.status == 200:
-                data = json.loads(response.read().decode())
-                display_name = data.get("display_name")
-                if display_name:
-                    return display_name
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"lat": lat, "lon": lng, "format": "json"},
+                headers={"User-Agent": "CivicPulse-Hackathon/1.0"}  # required by Nominatim's usage policy
+            )
+            _last_call_time = time.time()
+            data = response.json()
+            return data.get("display_name", f"{lat:.5f}, {lng:.5f}")
     except Exception:
-        pass
-    
-    return f"Location ({lat:.4f}, {lng:.4f})"
+        return f"{lat:.5f}, {lng:.5f}"  # graceful fallback, never block ticket creation on this
 

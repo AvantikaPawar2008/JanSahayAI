@@ -13,6 +13,7 @@ import {
   LogOut,
   User,
   Loader2,
+  Clock,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -26,6 +27,7 @@ import SignupPage from './pages/auth/SignupPage'
 // Citizen Pages
 import ReportIssuePage from './pages/citizen/ReportIssuePage'
 import TrackTicketPage from './pages/citizen/TrackTicketPage'
+import TicketHistoryPage from './pages/citizen/TicketHistoryPage'
 
 // Officer Pages
 import OfficerQueuePage from './pages/officer/OfficerQueuePage'
@@ -51,21 +53,24 @@ export default function App() {
     if (!user) return '/login'
     if (role === 'officer') return '/officer/queue'
     if (role === 'admin') return '/admin/dashboard'
-    return '/citizen/report'
+    return '/citizen/history'
   }
 
   return (
     <div className="min-h-screen flex flex-col">
       {/* Top Navigation */}
-      <nav className="sticky top-0 z-50 border-b border-white/10 bg-surface-900/80 backdrop-blur-xl">
+      <nav className="sticky top-0 z-50 border-b border-ivory-300 bg-white/90 backdrop-blur-md shadow-subtle">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
             <NavLink to={getHomePath()} className="flex items-center gap-2.5 group">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-civic-500 to-purple-500 flex items-center justify-center shadow-lg shadow-civic-500/20 group-hover:shadow-civic-500/40 transition-shadow">
+              <div className="w-9 h-9 rounded-xl bg-civic-500 text-white flex items-center justify-center shadow-sm group-hover:bg-civic-600 transition-colors">
                 <Activity className="w-5 h-5 text-white" />
               </div>
-              <span className="text-lg font-bold gradient-text hidden sm:block">CivicPulse</span>
+              <div className="flex flex-col">
+                <span className="text-base font-bold text-charcoal-900 tracking-tight leading-none">CivicPulse</span>
+                <span className="text-[10px] text-charcoal-500 font-medium tracking-wide">Smart Civic Resolution</span>
+              </div>
             </NavLink>
 
             {/* Desktop Nav Items according to current role */}
@@ -73,11 +78,14 @@ export default function App() {
               {/* Citizen Links */}
               {(!user || role === 'citizen' || role === 'admin') && (
                 <>
+                  <NavLink to="/citizen/history" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                    <Clock className="w-4 h-4 text-civic-600" /> My Tickets
+                  </NavLink>
                   <NavLink to="/citizen/report" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <FileText className="w-4 h-4" /> Report Issue
+                    <FileText className="w-4 h-4 text-civic-600" /> Report Issue
                   </NavLink>
                   <NavLink to="/citizen/track" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <MapPin className="w-4 h-4" /> Track
+                    <MapPin className="w-4 h-4 text-civic-600" /> Track
                   </NavLink>
                 </>
               )}
@@ -85,9 +93,9 @@ export default function App() {
               {/* Officer Links */}
               {(role === 'officer' || role === 'admin') && (
                 <>
-                  <div className="w-px h-6 bg-white/10 mx-2" />
+                  <div className="w-px h-5 bg-ivory-300 mx-1.5" />
                   <NavLink to="/officer/queue" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <Shield className="w-4 h-4" /> Queue
+                    <Shield className="w-4 h-4 text-sage-600" /> Queue
                   </NavLink>
                 </>
               )}
@@ -95,15 +103,15 @@ export default function App() {
               {/* Admin Links */}
               {role === 'admin' && (
                 <>
-                  <div className="w-px h-6 bg-white/10 mx-2" />
+                  <div className="w-px h-5 bg-ivory-300 mx-1.5" />
                   <NavLink to="/admin/dashboard" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <BarChart3 className="w-4 h-4" /> Dashboard
+                    <BarChart3 className="w-4 h-4 text-muted-blue-600" /> Dashboard
                   </NavLink>
                   <NavLink to="/admin/hotspots" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <Flame className="w-4 h-4 text-red-400" /> Hotspot Map
+                    <Flame className="w-4 h-4 text-coral-500" /> Hotspot Map
                   </NavLink>
                   <NavLink to="/admin/alerts" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <Bell className="w-4 h-4" /> Alerts
+                    <Bell className="w-4 h-4 text-amber-600" /> Alerts
                   </NavLink>
                 </>
               )}
@@ -114,21 +122,21 @@ export default function App() {
               {user ? (
                 <div className="flex items-center gap-3">
                   <div className="flex flex-col text-right">
-                    <span className="text-xs font-semibold text-white/90">
+                    <span className="text-xs font-semibold text-charcoal-900">
                       {profile?.full_name || user.email?.split('@')[0]}
                     </span>
                     <div className="flex items-center gap-1.5 justify-end">
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wider ${
                         role === 'admin'
-                          ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                          ? 'bg-muted-blue-50 text-muted-blue-700 border border-muted-blue-200'
                           : role === 'officer'
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                          : 'bg-civic-500/20 text-civic-300 border border-civic-500/30'
+                          ? 'bg-sage-100 text-civic-800 border border-sage-200'
+                          : 'bg-ivory-200 text-charcoal-700 border border-ivory-300'
                       }`}>
                         {role || 'citizen'}
                       </span>
                       {profile?.department && (
-                        <span className="text-[10px] text-white/40 max-w-[100px] truncate" title={profile.department}>
+                        <span className="text-[10px] text-charcoal-500 max-w-[120px] truncate" title={profile.department}>
                           · {profile.department}
                         </span>
                       )}
@@ -137,7 +145,7 @@ export default function App() {
 
                   <button
                     onClick={handleLogout}
-                    className="p-2 rounded-lg bg-white/5 border border-white/10 text-white/50 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    className="p-2 rounded-lg bg-ivory-100 border border-ivory-300 text-charcoal-500 hover:text-coral-600 hover:bg-coral-50 transition-colors"
                     title="Sign Out"
                   >
                     <LogOut className="w-4 h-4" />
@@ -157,7 +165,7 @@ export default function App() {
 
             {/* Mobile Menu Toggle */}
             <button
-              className="md:hidden p-2 rounded-lg text-white/60 hover:text-white hover:bg-white/5"
+              className="md:hidden p-2 rounded-lg text-charcoal-600 hover:text-charcoal-900 hover:bg-ivory-200"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -167,8 +175,11 @@ export default function App() {
 
         {/* Mobile Menu */}
         {mobileMenuOpen && (
-          <div className="md:hidden border-t border-white/10 bg-surface-900/95 backdrop-blur-xl animate-slide-up">
+          <div className="md:hidden border-t border-ivory-300 bg-white/98 shadow-card animate-slide-up px-4 py-3 space-y-1">
             <div className="px-4 py-3 space-y-1">
+              <NavLink to="/citizen/history" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
+                <Clock className="w-4 h-4" /> My Tickets
+              </NavLink>
               <NavLink to="/citizen/report" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
                 <FileText className="w-4 h-4" /> Report Issue
               </NavLink>
@@ -196,14 +207,14 @@ export default function App() {
                 </>
               )}
 
-              <div className="pt-2 border-t border-white/10">
+              <div className="pt-2 border-t border-ivory-200">
                 {user ? (
                   <button
                     onClick={() => {
                       setMobileMenuOpen(false)
                       handleLogout()
                     }}
-                    className="w-full text-left nav-link text-red-400 hover:text-red-300"
+                    className="w-full text-left nav-link text-coral-600 hover:text-coral-700"
                   >
                     <LogOut className="w-4 h-4" /> Sign Out ({profile?.full_name || user.email})
                   </button>
@@ -244,7 +255,7 @@ export default function App() {
                 ) : role === 'admin' ? (
                   <Navigate to="/admin/dashboard" replace />
                 ) : (
-                  <Navigate to="/citizen/report" replace />
+                  <Navigate to="/citizen/history" replace />
                 )
               ) : (
                 <Navigate to="/login" replace />
@@ -253,6 +264,14 @@ export default function App() {
           />
 
           {/* Citizen Routes: citizen, admin */}
+          <Route
+            path="/citizen/history"
+            element={
+              <RoleGuard allow={['citizen', 'admin']}>
+                <TicketHistoryPage />
+              </RoleGuard>
+            }
+          />
           <Route
             path="/citizen/report"
             element={
@@ -335,8 +354,8 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-white/5 py-4 px-6 text-center text-xs text-white/30">
-        CivicPulse © 2026 — AI-powered municipal complaint resolution platform
+      <footer className="border-t border-ivory-300 bg-white/70 py-4 px-6 text-center text-xs text-charcoal-400">
+        CivicPulse © 2026 — AI-driven smart civic resolution platform
       </footer>
     </div>
   )
