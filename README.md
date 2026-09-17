@@ -79,6 +79,7 @@ CREATE OR REPLACE FUNCTION find_nearby_tickets(
 RETURNS TABLE (
     id UUID,
     category TEXT,
+    sub_category TEXT,
     department department_type,
     urgency urgency_level,
     status ticket_status,
@@ -90,7 +91,7 @@ RETURNS TABLE (
 BEGIN
     RETURN QUERY
     SELECT
-        mt.id, mt.category, mt.department, mt.urgency, mt.status,
+        mt.id, mt.category, mt.sub_category, mt.department, mt.urgency, mt.status,
         mt.lat, mt.lng, mt.upvote_count, mt.created_at
     FROM master_tickets mt
     WHERE mt.status NOT IN ('RESOLVED', 'CLOSED')
@@ -124,8 +125,10 @@ BEGIN
             mt.category,
             mt.lat,
             mt.lng,
+            mt.location,
+            -- Project to Web Mercator (EPSG:3857) so eps operates on meters
             ST_ClusterDBSCAN(
-                mt.location::geometry,
+                ST_Transform(mt.location::geometry, 3857),
                 eps := eps_meters,
                 minpoints := min_pts
             ) OVER (PARTITION BY mt.category) AS cluster_id
@@ -137,7 +140,7 @@ BEGIN
         c.category,
         AVG(c.lat) AS center_lat,
         AVG(c.lng) AS center_lng,
-        eps_meters AS radius_m,
+        GREATEST(eps_meters, COALESCE(MAX(ST_Distance(c.location, ST_SetSRID(ST_MakePoint(AVG(c.lng), AVG(c.lat)), 4326)::geography)), eps_meters)) AS radius_m,
         COUNT(*)::BIGINT AS ticket_count,
         ARRAY_AGG(c.id) AS ticket_ids
     FROM clustered c
@@ -147,12 +150,28 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Function: Atomic upvote increment (avoids TOCTOU race conditions)
+CREATE OR REPLACE FUNCTION increment_ticket_upvote(target_ticket_id UUID)
+RETURNS INTEGER AS $$
+DECLARE
+    new_count INTEGER;
+BEGIN
+    UPDATE master_tickets
+    SET upvote_count = COALESCE(upvote_count, 1) + 1
+    WHERE id = target_ticket_id
+    RETURNING upvote_count INTO new_count;
+    
+    RETURN new_count;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Function: Find nearby hotspots (dedup for hotspot alerts)
 CREATE OR REPLACE FUNCTION find_nearby_hotspots(
     search_lat DOUBLE PRECISION,
     search_lng DOUBLE PRECISION,
     radius_m DOUBLE PRECISION DEFAULT 200,
-    search_category TEXT DEFAULT ''
+    search_category TEXT DEFAULT '',
+    search_sub_category TEXT DEFAULT NULL
 )
 RETURNS TABLE (id UUID, category TEXT, status alert_status) AS $$
 BEGIN

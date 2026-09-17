@@ -1,5 +1,6 @@
 """Loads all environment variables into a single Settings object for the entire backend."""
 
+# pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from functools import lru_cache

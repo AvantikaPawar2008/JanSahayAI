@@ -256,9 +256,36 @@ async def list_hotspots(
     ]
 
 
+def check_admin_access(authorization: Optional[str]) -> None:
+    """Validates that the request has an authenticated session with admin role."""
+    if not authorization or "Bearer " not in authorization:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    supabase = get_supabase_user_client(authorization)
+    token = authorization.split("Bearer ")[1].strip()
+    try:
+        user_res = supabase.auth.get_user(token)
+        if not user_res or not user_res.user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        user_id = user_res.user.id
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+    # Verify role in profiles table
+    profile = (
+        supabase.table("profiles")
+        .select("role")
+        .eq("id", user_id)
+        .single()
+        .execute()
+    )
+    if not profile.data or profile.data.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+
+
 @router.post("/detect-hotspots", response_model=HotspotDetectionResponse)
-async def trigger_hotspot_detection():
-    """Manually triggers hotspot detection (DBSCAN clustering on recent tickets)."""
+async def trigger_hotspot_detection(authorization: Optional[str] = Header(default=None)):
+    """Manually triggers hotspot detection (DBSCAN clustering on recent tickets). Requires admin role."""
+    check_admin_access(authorization)
     alerts = await detect_hotspots()
     return HotspotDetectionResponse(
         alerts_created=len(alerts),
@@ -267,8 +294,12 @@ async def trigger_hotspot_detection():
 
 
 @router.post("/hotspots/{alert_id}/analyze")
-async def trigger_root_cause_analysis(alert_id: str):
-    """Triggers LLM root-cause analysis for a specific hotspot alert."""
+async def trigger_root_cause_analysis(
+    alert_id: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Triggers LLM root-cause analysis for a specific hotspot alert. Requires admin role."""
+    check_admin_access(authorization)
     analysis = await analyze_hotspot_root_cause(alert_id)
     return {"alert_id": alert_id, "root_cause_analysis": analysis}
 

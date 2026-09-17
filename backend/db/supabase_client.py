@@ -1,5 +1,6 @@
 """Single shared Supabase client instance — import this wherever you need DB access."""
 
+# pyrefly: ignore [missing-import]
 from supabase import create_client, Client
 from backend.config import get_settings
 

@@ -50,11 +50,19 @@ def compute_priority_components(
     sla_elapsed_hours = max(0.0, (now - created_at).total_seconds() / 3600.0)
     urgency_weight = URGENCY_WEIGHTS.get(str(urgency).upper(), 3.0)
 
-    # Sub-components according to formula:
-    # priority_score = (sla_elapsed_hours * 0.4) + (urgency_weight * 0.4) + (duplicate_count * 0.2)
+    import math
+
     sla_comp = round(sla_elapsed_hours * 0.4, 2)
     urgency_comp = round(urgency_weight * 0.4, 2)
-    duplicate_comp = round(duplicate_count * 0.2, 2)
+
+    # Sub-component for duplicates with Sybil / Priority Hijacking resistance:
+    # Linear (0.2 per report) for initial reports (1-5), smoothly tapering with
+    # diminishing returns thereafter, capped at a maximum of 5.0.
+    if duplicate_count <= 5:
+        duplicate_comp = round(max(0.0, duplicate_count * 0.2), 2)
+    else:
+        duplicate_comp = round(min(5.0, 1.0 + math.log2(max(1, duplicate_count - 3)) * 0.8), 2)
+
     total_score = round(sla_comp + urgency_comp + duplicate_comp, 2)
 
     return {

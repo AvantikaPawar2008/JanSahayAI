@@ -16,9 +16,11 @@ if sys.platform == "win32":
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend", ".env"))
 
+# pyrefly: ignore [missing-import]
 from supabase import create_client
 
 # ============================================================

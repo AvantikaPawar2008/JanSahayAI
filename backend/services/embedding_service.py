@@ -1,7 +1,9 @@
 """Generates text embeddings locally using sentence-transformers (no API calls)."""
 
+# pyrefly: ignore [missing-import]
 from sentence_transformers import SentenceTransformer
 from backend.config import get_settings
+# pyrefly: ignore [missing-import]
 import numpy as np
 
 # Module-level model cache — loaded once on first call

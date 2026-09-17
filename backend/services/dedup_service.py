@@ -88,16 +88,13 @@ async def find_duplicate(
         return None
 
     if sub_category:
-        # Sub-category filter: only apply if the stored ticket also has a sub_category
-        # (avoids rejecting legacy tickets that predate this field)
-        sub_filtered = [
+        # Sub-category hard filter: Only candidates with the identical sub_category
+        # or legacy candidates lacking a sub_category are eligible.
+        # Candidates with an explicitly different sub_category are strictly rejected.
+        candidates = [
             c for c in candidates
             if not c.get("sub_category") or c.get("sub_category") == sub_category
         ]
-        # Fall back to department-only filter if sub_category wipes out all candidates
-        # (e.g. first ever ticket of this sub_category in the area)
-        if sub_filtered:
-            candidates = sub_filtered
 
     if not candidates:
         return None
@@ -105,45 +102,41 @@ async def find_duplicate(
     # ------------------------------------------------------------------
     # Stage 3 — Semantic similarity: must exceed threshold
     # ------------------------------------------------------------------
+    # Batch fetch the most recent report embedding for all candidates in a single query (eliminates N+1)
+    candidate_ids = [ticket["id"] for ticket in candidates]
+    reports_result = (
+        supabase.table("ticket_reports")
+        .select("master_ticket_id, text_embedding, created_at")
+        .in_("master_ticket_id", candidate_ids)
+        .not_.is_("text_embedding", "null")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    recent_embeddings: dict[str, list[float]] = {}
+    for rep in (reports_result.data or []):
+        m_id = rep.get("master_ticket_id")
+        if m_id and m_id not in recent_embeddings and rep.get("text_embedding"):
+            emb = rep["text_embedding"]
+            if isinstance(emb, str):
+                import json
+                try:
+                    emb = json.loads(emb)
+                except Exception:
+                    continue
+            recent_embeddings[m_id] = emb
+
     best_match = None
     best_similarity = 0.0
 
     for ticket in candidates:
         ticket_id = ticket["id"]
-
-        # Get the most recent report embedding for this master ticket
-        report_result = (
-            supabase.table("ticket_reports")
-            .select("text_embedding, image_url")
-            .eq("master_ticket_id", ticket_id)
-            .not_.is_("text_embedding", "null")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-
-        if not report_result.data or not report_result.data[0].get("text_embedding"):
+        stored_embedding = recent_embeddings.get(ticket_id)
+        if not stored_embedding:
             continue
 
-        stored_embedding = report_result.data[0]["text_embedding"]
-        # Handle case where embedding is stored as string (Supabase JSON round-trip)
-        if isinstance(stored_embedding, str):
-            import json
-            stored_embedding = json.loads(stored_embedding)
-
         text_similarity = compute_cosine_similarity(text_embedding, stored_embedding)
-
-        # Blend image similarity if both tickets have image embeddings
         final_similarity = text_similarity
-        if image_embedding:
-            stored_img_emb = report_result.data[0].get("image_embedding")
-            if stored_img_emb:
-                if isinstance(stored_img_emb, str):
-                    import json
-                    stored_img_emb = json.loads(stored_img_emb)
-                img_similarity = compute_cosine_similarity(image_embedding, stored_img_emb)
-                # Composite score: w_text * text_sim + w_image * img_sim
-                final_similarity = DEDUP_W_TEXT * text_similarity + DEDUP_W_IMAGE * img_similarity
 
         threshold = settings.dedup_similarity_threshold
         if final_similarity >= threshold and final_similarity > best_similarity:
@@ -154,11 +147,22 @@ async def find_duplicate(
     return best_match
 
 
-async def increment_upvote(master_ticket_id: str) -> None:
-    """Increments the upvote count on a master ticket (another citizen reported the same issue)."""
+async def increment_upvote(master_ticket_id: str) -> int:
+    """Atomically increments the upvote count on a master ticket (avoids TOCTOU race condition)."""
     supabase = get_supabase_client()
 
-    # Fetch current count
+    # Try atomic stored procedure first
+    try:
+        rpc_res = supabase.rpc(
+            "increment_ticket_upvote",
+            {"target_ticket_id": master_ticket_id}
+        ).execute()
+        if rpc_res.data is not None:
+            return int(rpc_res.data)
+    except Exception:
+        pass
+
+    # Fallback to single-row update if migration not yet applied
     result = (
         supabase.table("master_tickets")
         .select("upvote_count")
@@ -167,7 +171,9 @@ async def increment_upvote(master_ticket_id: str) -> None:
         .execute()
     )
     current = result.data.get("upvote_count", 1) if result.data else 1
-
+    new_count = current + 1
     supabase.table("master_tickets").update(
-        {"upvote_count": current + 1}
+        {"upvote_count": new_count}
     ).eq("id", master_ticket_id).execute()
+    return new_count
+

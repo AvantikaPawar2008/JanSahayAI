@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react'
 import { Loader2, AlertTriangle, MapPin, Search, Zap, ChevronDown, ChevronUp } from 'lucide-react'
 import MapView from '../../components/MapView'
 import useGeolocation from '../../hooks/useGeolocation'
+import useAuth from '../../hooks/useAuth'
 import { API_BASE } from '../../supabaseClient'
 
 /**
  * HotspotAlertsPage — root-cause infrastructure alert list with map clusters.
  */
 export default function HotspotAlertsPage() {
+  const { session } = useAuth()
   const { lat: userLat, lng: userLng } = useGeolocation()
   const [hotspots, setHotspots] = useState([])
   const [loading, setLoading] = useState(true)
@@ -38,8 +40,13 @@ export default function HotspotAlertsPage() {
   const analyzeRootCause = async (alertId) => {
     setAnalyzingId(alertId)
     try {
+      const headers = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
       const response = await fetch(`${API_BASE}/api/admin/hotspots/${alertId}/analyze`, {
         method: 'POST',
+        headers,
       })
       if (response.ok) {
         fetchHotspots()
@@ -53,8 +60,13 @@ export default function HotspotAlertsPage() {
 
   const updateStatus = async (alertId, newStatus) => {
     try {
+      const headers = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
       await fetch(`${API_BASE}/api/admin/hotspots/${alertId}?status=${newStatus}`, {
         method: 'PATCH',
+        headers,
       })
       fetchHotspots()
     } catch (err) {

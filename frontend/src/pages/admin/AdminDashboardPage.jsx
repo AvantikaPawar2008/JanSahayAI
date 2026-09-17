@@ -113,7 +113,14 @@ export default function AdminDashboardPage() {
   const runHotspotDetection = async () => {
     setDetecting(true)
     try {
-      const response = await fetch(`${API_BASE}/api/admin/detect-hotspots`, { method: 'POST' })
+      const headers = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
+      const response = await fetch(`${API_BASE}/api/admin/detect-hotspots`, {
+        method: 'POST',
+        headers,
+      })
       if (response.ok) {
         const result = await response.json()
         alert(`Spatial cluster analysis complete: ${result.alerts_created} hotspots identified`)

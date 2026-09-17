@@ -51,13 +51,24 @@ async def detect_hotspots() -> list[HotspotAlert]:
         ).execute()
 
         if existing.data and len(existing.data) > 0:
-            # Update existing alert's ticket count
+            existing_id = existing.data[0]["id"]
+            # Merge ticket IDs rather than overwriting
+            existing_alert = (
+                supabase.table("hotspot_alerts")
+                .select("ticket_ids")
+                .eq("id", existing_id)
+                .single()
+                .execute()
+            )
+            curr_ids = (existing_alert.data or {}).get("ticket_ids") or []
+            merged_ids = list(dict.fromkeys(curr_ids + cluster.get("ticket_ids", [])))
+
             supabase.table("hotspot_alerts").update(
                 {
-                    "ticket_count": cluster["ticket_count"],
-                    "ticket_ids": cluster.get("ticket_ids", []),
+                    "ticket_count": max(len(merged_ids), int(cluster["ticket_count"])),
+                    "ticket_ids": merged_ids,
                 }
-            ).eq("id", existing.data[0]["id"]).execute()
+            ).eq("id", existing_id).execute()
             continue
 
         # Insert new hotspot alert
@@ -120,6 +131,8 @@ async def analyze_hotspot_root_cause(alert_id: str) -> str:
         .execute()
     )
     alert = alert_result.data
+    if not alert:
+        return json.dumps({"error": "Hotspot alert not found"})
 
     # Fetch related ticket descriptions
     ticket_ids = alert.get("ticket_ids", [])
@@ -131,20 +144,28 @@ async def analyze_hotspot_root_cause(alert_id: str) -> str:
             .in_("id", ticket_ids)
             .execute()
         )
-        descriptions = [
-            t.get("description", "No description")
-            for t in (tickets_result.data or [])
-        ]
+        # Sanitize descriptions to prevent prompt injection and token overflow
+        for t in (tickets_result.data or []):
+            raw_desc = t.get("description") or "No description"
+            sanitized = (
+                raw_desc.replace("</citizen_complaints>", "")
+                .replace("<citizen_complaints>", "")
+                .strip()
+            )
+            descriptions.append(sanitized[:300])
 
     # Call LLM for root cause analysis
     client = get_groq_client()
+    formatted_descriptions = (
+        "\n".join(f"- {d}" for d in descriptions) if descriptions else "- None provided"
+    )
     prompt = HOTSPOT_ROOT_CAUSE_PROMPT.format(
-        ticket_count=alert["ticket_count"],
-        radius_m=alert["radius_m"],
-        category=alert["category"],
-        center_lat=alert["center_lat"],
-        center_lng=alert["center_lng"],
-        complaint_descriptions="\n".join(f"- {d}" for d in descriptions),
+        ticket_count=alert.get("ticket_count", len(ticket_ids)),
+        radius_m=round(alert.get("radius_m", settings.hotspot_eps_meters), 1),
+        category=alert.get("category", "General"),
+        center_lat=round(alert.get("center_lat", 0.0), 5),
+        center_lng=round(alert.get("center_lng", 0.0), 5),
+        complaint_descriptions=formatted_descriptions,
     )
 
     response = client.chat.completions.create(

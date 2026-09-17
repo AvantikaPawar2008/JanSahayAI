@@ -107,7 +107,14 @@ export default function HotspotMapPage() {
   const runDetection = async () => {
     setDetecting(true)
     try {
-      const res = await fetch(`${API_BASE}/api/admin/detect-hotspots`, { method: 'POST' })
+      const headers = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
+      const res = await fetch(`${API_BASE}/api/admin/detect-hotspots`, {
+        method: 'POST',
+        headers,
+      })
       if (res.ok) {
         const result = await res.json()
         alert(`Spatial cluster analysis complete: ${result.alerts_created} hotspots identified`)

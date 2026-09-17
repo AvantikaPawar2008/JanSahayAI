@@ -1,6 +1,7 @@
 """WhatsApp Business API webhook — stub implementation for future integration."""
 
 import logging
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Request
 
 logger = logging.getLogger("civicpulse.whatsapp")

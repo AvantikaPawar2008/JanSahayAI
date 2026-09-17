@@ -136,7 +136,21 @@ async def submit_complaint(
     if duplicate:
         # ---- DUPLICATE PATH: link to existing master ticket ----
         master_ticket_id = duplicate["id"]
-        await increment_upvote(master_ticket_id)
+        new_upvote_count = await increment_upvote(master_ticket_id)
+
+        # If a citizen reports an issue on a ticket that was marked as resolved pending review,
+        # reopen the ticket immediately so officers re-inspect the site.
+        if duplicate.get("status") == "RESOLVED_PENDING_CITIZEN":
+            try:
+                supabase.table("master_tickets").update(
+                    {"status": "REOPENED", "needs_admin_review": True}
+                ).eq("id", master_ticket_id).execute()
+                logger.warning(
+                    f"Master ticket {master_ticket_id} reverted from RESOLVED_PENDING_CITIZEN to REOPENED "
+                    f"due to citizen duplicate report."
+                )
+            except Exception as re_err:
+                logger.error(f"Failed to reopen pending ticket {master_ticket_id}: {re_err}")
 
         # Recalculate priority with incremented duplicate count
         try:
@@ -175,9 +189,9 @@ async def submit_complaint(
             urgency=duplicate.get("urgency"),
             message=(
                 f"Your report has been added to an existing ticket. "
-                f"{duplicate.get('upvote_count', 1) + 1} citizens have reported this issue."
+                f"{new_upvote_count} citizens have reported this issue."
             ),
-            upvote_count=duplicate.get("upvote_count", 1) + 1,
+            upvote_count=new_upvote_count,
         )
 
     # ---- NEW TICKET PATH ----
