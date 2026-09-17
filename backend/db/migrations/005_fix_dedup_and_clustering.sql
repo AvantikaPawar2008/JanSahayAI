@@ -5,6 +5,15 @@
 -- 4. Parameterized find_nearby_hotspots supporting sub_category
 
 -- ============================================================
+-- 0. Drop existing functions whose return signatures changed
+-- ============================================================
+DROP FUNCTION IF EXISTS find_nearby_tickets(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) CASCADE;
+DROP FUNCTION IF EXISTS detect_hotspot_clusters(DOUBLE PRECISION, INTEGER, INTEGER) CASCADE;
+DROP FUNCTION IF EXISTS increment_ticket_upvote(UUID) CASCADE;
+DROP FUNCTION IF EXISTS find_nearby_hotspots(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS find_nearby_hotspots(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT) CASCADE;
+
+-- ============================================================
 -- 1. Fix detect_hotspot_clusters (Metric DBSCAN)
 -- ============================================================
 CREATE OR REPLACE FUNCTION detect_hotspot_clusters(
