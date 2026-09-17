@@ -117,7 +117,7 @@ async def reverse_geocode(lat: float, lng: float) -> str:
             response = await client.get(
                 "https://nominatim.openstreetmap.org/reverse",
                 params={"lat": lat, "lon": lng, "format": "json"},
-                headers={"User-Agent": "CivicPulse-Hackathon/1.0"}  # required by Nominatim's usage policy
+                headers={"User-Agent": "JanSahayAI-Hackathon/1.0"}  # required by Nominatim's usage policy
             )
             _last_call_time = time.time()
             data = response.json()

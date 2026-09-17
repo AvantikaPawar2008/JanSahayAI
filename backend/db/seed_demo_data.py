@@ -1,5 +1,5 @@
 """
-seed_demo_data.py — Pre-built Hackathon Seed Script for CivicPulse
+seed_demo_data.py — Pre-built Hackathon Seed Script for JanSahayAI
 
 1. Deletes all pre-existing tickets, reports, photos, and hotspots (clean state).
 2. Seeds 12 realistic municipal tickets in Pune across all 5 departments:
@@ -445,7 +445,7 @@ async def run_hotspot_clustering():
 
 async def main():
     print("=" * 65)
-    print(" CIVICPULSE HACKATHON SEED PIPELINE ")
+    print(" JANSAHAYAI HACKATHON SEED PIPELINE ")
     print("=" * 65)
 
     delete_existing_data()

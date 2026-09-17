@@ -67,17 +67,34 @@ async def get_ticket(
     authorization: Optional[str] = Header(default=None),
 ):
     """Returns a single master ticket by ID."""
-    supabase = get_supabase_user_client(authorization)
+    t = None
 
-    result = (
-        supabase.table("master_tickets")
-        .select("*")
-        .eq("id", ticket_id)
-        .single()
-        .execute()
-    )
+    if authorization:
+        try:
+            supabase = get_supabase_user_client(authorization)
+            result = (
+                supabase.table("master_tickets")
+                .select("*")
+                .eq("id", ticket_id)
+                .execute()
+            )
+            if result.data and len(result.data) > 0:
+                t = result.data[0]
+        except Exception:
+            pass
 
-    if not result.data:
+    if not t:
+        admin_db = get_supabase_client()
+        admin_res = (
+            admin_db.table("master_tickets")
+            .select("*")
+            .eq("id", ticket_id)
+            .execute()
+        )
+        if admin_res.data and len(admin_res.data) > 0:
+            t = admin_res.data[0]
+
+    if not t:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     t = result.data

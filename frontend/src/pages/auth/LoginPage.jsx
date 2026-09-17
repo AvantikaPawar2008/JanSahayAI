@@ -60,7 +60,7 @@ export default function LoginPage() {
           <div className="w-12 h-12 rounded-2xl bg-civic-600 text-white mx-auto flex items-center justify-center shadow-md shadow-civic-600/20 mb-3.5">
             <Activity className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-extrabold text-charcoal-900 tracking-tight">Welcome to CivicPulse</h1>
+          <h1 className="text-2xl font-extrabold text-charcoal-900 tracking-tight">Welcome to JanSahayAI</h1>
           <p className="text-xs text-charcoal-500 mt-1 font-medium">Municipal resolution &amp; geospatial response portal</p>
         </div>
 

@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload, MapPin } from 'lucide-react'
+import { ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload, MapPin, RefreshCw } from 'lucide-react'
 import SOPStepsList from '../../components/SOPStepsList'
 import PhotoCapture from '../../components/PhotoCapture'
 import GpsBadge from '../../components/GpsBadge'
 import UrgencyBadge from '../../components/UrgencyBadge'
 import MapView from '../../components/MapView'
 import useGeolocation from '../../hooks/useGeolocation'
+import useAuth from '../../hooks/useAuth'
 import { API_BASE } from '../../supabaseClient'
 
 /**
@@ -15,10 +16,12 @@ import { API_BASE } from '../../supabaseClient'
 export default function TicketDetailPage() {
   const { ticketId } = useParams()
   const navigate = useNavigate()
+  const { session } = useAuth()
   const { lat, lng, accuracy, loading: gpsLoading, error: gpsError, refresh: refreshGps } = useGeolocation()
 
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [completedSteps, setCompletedSteps] = useState([])
   const [beforePhoto, setBeforePhoto] = useState(null)
   const [afterPhoto, setAfterPhoto] = useState(null)
@@ -27,22 +30,31 @@ export default function TicketDetailPage() {
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState(null)
 
-  useEffect(() => {
-    fetchTicketDetail()
-  }, [ticketId])
-
   const fetchTicketDetail = async () => {
+    setLoading(true)
+    setFetchError(null)
     try {
-      const response = await fetch(`${API_BASE}/api/officer/ticket/${ticketId}`)
-      if (!response.ok) throw new Error('Failed to load ticket')
+      const headers = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
+      const response = await fetch(`${API_BASE}/api/officer/ticket/${ticketId}`, { headers })
+      if (!response.ok) {
+        throw new Error(`Failed to load ticket (${response.status})`)
+      }
       const result = await response.json()
       setData(result)
     } catch (err) {
       console.error('Ticket detail error:', err)
+      setFetchError(err.message)
     } finally {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    fetchTicketDetail()
+  }, [ticketId, session])
 
   const uploadPhoto = async (photoFile, photoType) => {
     if (!lat || !lng) {
@@ -59,8 +71,14 @@ export default function TicketDetailPage() {
       formData.append('lng', lng.toString())
       formData.append('image_file', photoFile)
 
+      const headers = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
+
       const response = await fetch(`${API_BASE}/api/officer/submit-proof`, {
         method: 'POST',
+        headers,
         body: formData,
       })
 
@@ -81,9 +99,14 @@ export default function TicketDetailPage() {
   const runVerification = async () => {
     setVerifying(true)
     try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
+
       const response = await fetch(`${API_BASE}/api/verify/photo`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ master_ticket_id: ticketId }),
       })
 
@@ -101,16 +124,39 @@ export default function TicketDetailPage() {
 
   if (loading) {
     return (
-      <div className="flex justify-center py-20">
+      <div className="flex flex-col items-center justify-center py-24 gap-3">
         <Loader2 className="w-8 h-8 text-civic-500 animate-spin" />
+        <span className="text-xs text-charcoal-400 font-medium">Loading ticket details & SOP...</span>
       </div>
     )
   }
 
-  if (!data) {
+  if (!data || !data.ticket) {
     return (
-      <div className="text-center py-20 text-charcoal-400">
-        <p>Ticket not found</p>
+      <div className="page-enter max-w-lg mx-auto px-4 py-20 text-center">
+        <div className="glass-card p-8 text-center space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-coral-50 border border-coral-200 flex items-center justify-center mx-auto text-coral-600">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <h2 className="text-lg font-bold text-charcoal-900">Ticket Not Found</h2>
+          <p className="text-sm text-charcoal-500">
+            {fetchError || "The requested ticket could not be found or you don't have permission to view it."}
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => navigate('/officer')}
+              className="btn btn-secondary text-xs"
+            >
+              Back to Queue
+            </button>
+            <button
+              onClick={fetchTicketDetail}
+              className="btn btn-primary text-xs flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        </div>
       </div>
     )
   }

@@ -7,7 +7,23 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
-  const [cachedRole, setCachedRole] = useState(() => localStorage.getItem('civicpulse_role') || null)
+  const setRoleCache = (r) => {
+    try {
+      localStorage.setItem('jansahayai_role', r)
+      localStorage.setItem('civicpulse_role', r)
+    } catch (_) {}
+  }
+
+  const clearRoleCache = () => {
+    try {
+      localStorage.removeItem('jansahayai_role')
+      localStorage.removeItem('civicpulse_role')
+    } catch (_) {}
+  }
+
+  const [cachedRole, setCachedRole] = useState(() => {
+    return localStorage.getItem('jansahayai_role') || localStorage.getItem('civicpulse_role') || null
+  })
   const [loading, setLoading] = useState(true)
 
   const fetchProfile = useCallback(async (currentUser) => {
@@ -15,7 +31,7 @@ export function AuthProvider({ children }) {
     if (!userId) {
       setProfile(null)
       setCachedRole(null)
-      localStorage.removeItem('civicpulse_role')
+      clearRoleCache()
       return null
     }
 
@@ -34,7 +50,7 @@ export function AuthProvider({ children }) {
         setProfile(data)
         if (data.role) {
           setCachedRole(data.role)
-          localStorage.setItem('civicpulse_role', data.role)
+          setRoleCache(data.role)
         }
         return data
       }
@@ -47,7 +63,7 @@ export function AuthProvider({ children }) {
       }
       setProfile(fallback)
       setCachedRole('citizen')
-      localStorage.setItem('civicpulse_role', 'citizen')
+      setRoleCache('citizen')
 
       try {
         await supabase.from('profiles').upsert(fallback)
@@ -79,7 +95,7 @@ export function AuthProvider({ children }) {
       } else {
         setProfile(null)
         setCachedRole(null)
-        localStorage.removeItem('civicpulse_role')
+        clearRoleCache()
       }
       if (isMounted) setLoading(false)
     }).catch(() => {
@@ -98,7 +114,7 @@ export function AuthProvider({ children }) {
         } else {
           setProfile(null)
           setCachedRole(null)
-          localStorage.removeItem('civicpulse_role')
+          clearRoleCache()
         }
         if (isMounted) setLoading(false)
       }
@@ -129,7 +145,7 @@ export function AuthProvider({ children }) {
           setProfile(userProfile)
           if (userProfile.role) {
             setCachedRole(userProfile.role)
-            localStorage.setItem('civicpulse_role', userProfile.role)
+            setRoleCache(userProfile.role)
           }
         }
       }
@@ -168,7 +184,7 @@ export function AuthProvider({ children }) {
         const userProfile = await fetchProfile(data.user)
         setProfile(userProfile)
         setCachedRole('citizen')
-        localStorage.setItem('civicpulse_role', 'citizen')
+        setRoleCache('citizen')
         return { user: data.user, session: data.session, profile: userProfile }
       }
 
@@ -186,7 +202,7 @@ export function AuthProvider({ children }) {
     setSession(null)
     setProfile(null)
     setCachedRole(null)
-    localStorage.removeItem('civicpulse_role')
+    clearRoleCache()
     setLoading(false)
   }
 

@@ -28,22 +28,22 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
 )
-logger = logging.getLogger("civicpulse")
+logger = logging.getLogger("jansahayai")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup/shutdown events — preload ML model on startup."""
-    logger.info("🚀 CivicPulse starting up...")
+    logger.info("🚀 JanSahayAI starting up...")
     logger.info("📦 Loading sentence-transformers model (first time may download ~80MB)...")
     preload_model()
     logger.info("✅ Embedding model loaded and ready")
     yield
-    logger.info("🛑 CivicPulse shutting down...")
+    logger.info("🛑 JanSahayAI shutting down...")
 
 
 app = FastAPI(
-    title="CivicPulse API",
+    title="JanSahayAI API",
     description="AI-driven municipal complaint resolution platform",
     version="1.0.0",
     lifespan=lifespan,
@@ -70,7 +70,7 @@ app.include_router(whatsapp_webhook.router)
 @app.get("/")
 async def root():
     return {
-        "name": "CivicPulse API",
+        "name": "JanSahayAI API",
         "version": "1.0.0",
         "status": "running",
         "docs": "/docs",

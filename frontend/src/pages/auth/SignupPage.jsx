@@ -41,7 +41,7 @@ export default function SignupPage() {
           <div className="w-12 h-12 rounded-2xl bg-civic-600 text-white mx-auto flex items-center justify-center shadow-md shadow-civic-600/20 mb-3.5">
             <UserPlus className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-extrabold text-charcoal-900 tracking-tight">Join CivicPulse</h1>
+          <h1 className="text-2xl font-extrabold text-charcoal-900 tracking-tight">Join JanSahayAI</h1>
           <p className="text-xs text-charcoal-500 mt-1 font-medium">Register as a citizen to track and report issues</p>
         </div>
 

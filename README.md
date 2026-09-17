@@ -1,8 +1,8 @@
-# CivicPulse — AI-Driven Municipal Civic Resolution Platform
+# JanSahayAI — AI-Driven Municipal Civic Resolution Platform
 
 > 🏙️ An AI-powered platform that transforms how cities handle citizen complaints — from intake to resolution, with deduplication, auto-triage, fraud detection, and infrastructure hotspot alerts.
 
-![CivicPulse](https://img.shields.io/badge/CivicPulse-v1.0.0-6366f1?style=for-the-badge)
+![JanSahayAI](https://img.shields.io/badge/JanSahayAI-v1.0.0-6366f1?style=for-the-badge)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-61DAFB?style=flat-square&logo=react&logoColor=black)
 ![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)

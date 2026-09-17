@@ -68,7 +68,7 @@ export default function App() {
                 <Activity className="w-5 h-5 text-white" />
               </div>
               <div className="flex flex-col">
-                <span className="text-base font-bold text-charcoal-900 tracking-tight leading-none">CivicPulse</span>
+                <span className="text-base font-bold text-charcoal-900 tracking-tight leading-none">JanSahayAI</span>
                 <span className="text-[10px] text-charcoal-500 font-medium tracking-wide">Smart Civic Resolution</span>
               </div>
             </NavLink>
@@ -355,7 +355,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-ivory-300 bg-white/70 py-4 px-6 text-center text-xs text-charcoal-400">
-        CivicPulse © 2026 — AI-driven smart civic resolution platform
+        JanSahayAI © 2026 — AI-driven smart civic resolution platform
       </footer>
     </div>
   )
