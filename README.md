@@ -112,7 +112,7 @@ Locks resolution sign-offs behind 2 automated validation layers:
 ## 📁 Project Structure
 
 ```
-civicpulse/
+JanSahayAI/
 ├── backend/
 │   ├── main.py                     # FastAPI server entrypoint
 │   ├── config.py                   # Environment settings & Pydantic config
@@ -166,7 +166,7 @@ civicpulse/
 ### 1. Database Setup (Supabase)
 
 1. Open your Supabase Dashboard $\rightarrow$ **SQL Editor**.
-2. Run the SQL schema script in [`backend/db/schema.sql`](file:///c:/hack1/civicpulse/backend/db/schema.sql).
+2. Run the SQL schema script in `backend/db/schema.sql`.
 3. Execute the custom SQL functions below:
 
 ```sql
@@ -321,13 +321,6 @@ This populates ~34 synthetic civic tickets around Pune to demonstrate instant DB
 
 ---
 
-## 🎮 Hackathon Demo Walkthrough Guide
-
-1. **Submit Issue (`/report`):** Open Citizen Portal, record an audio voice complaint or upload a photo of a pothole, and submit.
-2. **Test Deduplication:** Submit a second report at the exact same location. The system detects spatial & semantic similarity and **converts it into an Upvote** on the original Master Ticket.
-3. **Field Officer Task Queue (`/officer`):** Log into Officer Portal. View the high-priority task, complete with **Urgency: HIGH** and the **AI-generated 3-Step Field SOP checklist**.
-4. **Anti-Fraud Proof Upload:** Click **Complete Task**, upload a post-repair photo. The system runs **150m Geofencing check + Vision AI comparison** before resolving the ticket.
-5. **Admin Hotspot Management (`/admin`):** Open Admin Dashboard. Click **Detect Hotspots** to view the live PostGIS DBSCAN cluster map combining nearby complaints into an infrastructure alert.
 
 ---
 
