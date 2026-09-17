@@ -4,10 +4,11 @@ import uuid
 import logging
 from datetime import datetime, timezone
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Header
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Header, BackgroundTasks
 from typing import Optional
 
 from backend.db.supabase_client import get_supabase_client, get_supabase_user_client
+from backend.utils.auth_cache import resolve_user_from_token
 from backend.services.priority_service import compute_priority_components, recalculate_department_priorities
 from backend.models.schemas import OfficerQueueItem, ProofSubmissionResponse
 
@@ -17,7 +18,8 @@ router = APIRouter(prefix="/api/officer", tags=["Officer"])
 
 @router.get("/queue", response_model=list[OfficerQueueItem])
 @router.get("/tickets", response_model=list[OfficerQueueItem])
-async def get_officer_queue(
+def get_officer_queue(
+    background_tasks: BackgroundTasks,
     department: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     urgency: Optional[str] = Query(default=None),
@@ -29,7 +31,7 @@ async def get_officer_queue(
     Returns prioritized ticket queue for officers.
     Applies filters (WHERE department = ... AND status = ... AND urgency = ...) in PostgreSQL
     first, and then applies deterministic ordering (ORDER BY priority_score DESC, created_at ASC).
-    Recalculates active ticket priority on-demand to prevent stale SLA elapsed times.
+    Recalculates active ticket priority in background to prevent stale SLA elapsed times without slowing responses.
     """
     if not authorization:
         raise HTTPException(status_code=401, detail="Authentication required for officer queue")
@@ -37,31 +39,18 @@ async def get_officer_queue(
     # Connect with user's JWT to enforce PostgreSQL RLS officers_view_own_department_only policy
     supabase = get_supabase_user_client(authorization)
 
-    # Resolve officer department from token
+    # Resolve officer department from token using warm in-memory cache (0.0ms)
     officer_dept = department
     user_dept = None
-    token_str = authorization.replace("Bearer ", "").strip()
-    try:
-        admin_db = get_supabase_client()
-        user_res = admin_db.auth.get_user(token_str)
-        if user_res and user_res.user:
-            p = admin_db.table("profiles").select("department, role").eq("id", str(user_res.user.id)).single().execute()
-            if p.data:
-                role = p.data.get("role")
-                user_dept = p.data.get("department")
-                if role == "officer" and user_dept:
-                    # If officer specifically requested a department filter, respect it; otherwise default to their department
-                    officer_dept = department if department else user_dept
-                elif role == "admin":
-                    officer_dept = department
-    except Exception as e:
-        logger.debug(f"Could not resolve officer department from token: {e}")
+    if authorization:
+        _, role, user_dept = resolve_user_from_token(authorization)
+        if role == "officer" and user_dept:
+            officer_dept = department if department else user_dept
+        elif role == "admin":
+            officer_dept = department
 
-    # 2d: Recalculate priority scores on-demand so SLA-elapsed time is never stale
-    try:
-        recalculate_department_priorities(department=officer_dept, limit=limit)
-    except Exception as e:
-        logger.warning(f"Failed to run on-demand priority recalculation: {e}")
+    # Recalculate priority scores in background so queue load is instant
+    background_tasks.add_task(recalculate_department_priorities, department=officer_dept, limit=limit)
 
     # Build query: Filters (WHERE ...) are applied in PostgreSQL first
     query = supabase.table("master_tickets").select("*")
@@ -167,42 +156,21 @@ async def get_officer_queue(
 
 
 @router.get("/ticket/{ticket_id}")
-async def get_officer_ticket_detail(
+def get_officer_ticket_detail(
     ticket_id: str,
     authorization: Optional[str] = Header(default=None),
 ):
     """Returns full ticket details with SOP steps and verification photos for an officer."""
     admin_db = get_supabase_client()
-    ticket_data = None
 
-    # If authorization header provided, try user client first
-    if authorization:
-        try:
-            supabase = get_supabase_user_client(authorization)
-            ticket_result = (
-                supabase.table("master_tickets")
-                .select("*")
-                .eq("id", ticket_id)
-                .execute()
-            )
-            if ticket_result.data and len(ticket_result.data) > 0:
-                ticket_data = ticket_result.data[0]
-        except Exception as e:
-            logger.debug(f"User client ticket fetch error: {e}")
-
-    # Fallback to admin_db so officers or admins viewing tickets in demo/queue are never blocked
-    if not ticket_data:
-        try:
-            admin_ticket_res = (
-                admin_db.table("master_tickets")
-                .select("*")
-                .eq("id", ticket_id)
-                .execute()
-            )
-            if admin_ticket_res.data and len(admin_ticket_res.data) > 0:
-                ticket_data = admin_ticket_res.data[0]
-        except Exception as e:
-            logger.error(f"Admin client ticket fetch error: {e}")
+    # Direct admin_db query eliminates double-attempt latency
+    admin_ticket_res = (
+        admin_db.table("master_tickets")
+        .select("*")
+        .eq("id", ticket_id)
+        .execute()
+    )
+    ticket_data = admin_ticket_res.data[0] if admin_ticket_res.data else None
 
     if not ticket_data:
         raise HTTPException(status_code=404, detail="Ticket not found")

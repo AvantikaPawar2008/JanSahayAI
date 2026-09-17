@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/tickets", tags=["Tickets"])
 
 
 @router.get("", response_model=TicketListResponse)
-async def list_tickets(
+def list_tickets(
     status: Optional[str] = Query(default=None),
     department: Optional[str] = Query(default=None),
     urgency: Optional[str] = Query(default=None),
@@ -62,42 +62,22 @@ async def list_tickets(
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
-async def get_ticket(
+def get_ticket(
     ticket_id: str,
     authorization: Optional[str] = Header(default=None),
 ):
     """Returns a single master ticket by ID."""
-    t = None
-
-    if authorization:
-        try:
-            supabase = get_supabase_user_client(authorization)
-            result = (
-                supabase.table("master_tickets")
-                .select("*")
-                .eq("id", ticket_id)
-                .execute()
-            )
-            if result.data and len(result.data) > 0:
-                t = result.data[0]
-        except Exception:
-            pass
-
-    if not t:
-        admin_db = get_supabase_client()
-        admin_res = (
-            admin_db.table("master_tickets")
-            .select("*")
-            .eq("id", ticket_id)
-            .execute()
-        )
-        if admin_res.data and len(admin_res.data) > 0:
-            t = admin_res.data[0]
-
-    if not t:
+    admin_db = get_supabase_client()
+    res = (
+        admin_db.table("master_tickets")
+        .select("*")
+        .eq("id", ticket_id)
+        .execute()
+    )
+    if not res.data or len(res.data) == 0:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
-    t = result.data
+    t = res.data[0]
     return TicketResponse(
         id=t["id"],
         category=t.get("category", ""),

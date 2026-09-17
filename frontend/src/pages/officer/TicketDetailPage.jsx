@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload, MapPin, RefreshCw } from 'lucide-react'
 import SOPStepsList from '../../components/SOPStepsList'
@@ -30,13 +30,15 @@ export default function TicketDetailPage() {
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState(null)
 
-  const fetchTicketDetail = async () => {
+  const hasFetched = useRef(false)
+
+  const fetchTicketDetail = async (token) => {
     setLoading(true)
     setFetchError(null)
     try {
       const headers = {}
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
       }
       const response = await fetch(`${API_BASE}/api/officer/ticket/${ticketId}`, { headers })
       if (!response.ok) {
@@ -53,8 +55,19 @@ export default function TicketDetailPage() {
   }
 
   useEffect(() => {
-    fetchTicketDetail()
-  }, [ticketId, session])
+    // Fetch once as soon as session is available (or immediately if no session needed due to admin fallback)
+    if (!hasFetched.current) {
+      hasFetched.current = true
+      fetchTicketDetail(session?.access_token)
+    }
+  }, [ticketId])
+
+  // If session resolves after initial render (e.g., slow token retrieval), re-fetch with auth
+  useEffect(() => {
+    if (session?.access_token && hasFetched.current && !data && !loading) {
+      fetchTicketDetail(session.access_token)
+    }
+  }, [session?.access_token])
 
   const uploadPhoto = async (photoFile, photoType) => {
     if (!lat || !lng) {
@@ -87,7 +100,7 @@ export default function TicketDetailPage() {
       setUploadResult(result)
       
       // Refresh data
-      await fetchTicketDetail()
+      await fetchTicketDetail(session?.access_token)
     } catch (err) {
       console.error('Upload error:', err)
       alert('Failed to upload photo: ' + err.message)
@@ -114,7 +127,7 @@ export default function TicketDetailPage() {
       setVerifyResult(result)
       
       // Refresh data
-      await fetchTicketDetail()
+      await fetchTicketDetail(session?.access_token)
     } catch (err) {
       console.error('Verification error:', err)
     } finally {

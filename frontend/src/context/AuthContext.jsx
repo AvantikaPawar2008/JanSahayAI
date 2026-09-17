@@ -90,33 +90,34 @@ export function AuthProvider({ children }) {
       if (!isMounted) return
       setSession(session)
       setUser(session?.user ?? null)
+      // Unblock loading immediately so UI renders without waiting for network profile fetch
+      setLoading(false)
       if (session?.user) {
-        await fetchProfile(session.user)
+        fetchProfile(session.user)
       } else {
         setProfile(null)
         setCachedRole(null)
         clearRoleCache()
       }
-      if (isMounted) setLoading(false)
     }).catch(() => {
       if (isMounted) setLoading(false)
     })
 
     // 2. Auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, currentSession) => {
+      (event, currentSession) => {
         if (!isMounted) return
         setSession(currentSession)
         setUser(currentSession?.user ?? null)
+        setLoading(false)
 
         if (currentSession?.user) {
-          await fetchProfile(currentSession.user)
+          fetchProfile(currentSession.user)
         } else {
           setProfile(null)
           setCachedRole(null)
           clearRoleCache()
         }
-        if (isMounted) setLoading(false)
       }
     )
 

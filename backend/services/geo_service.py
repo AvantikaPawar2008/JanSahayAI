@@ -96,21 +96,30 @@ def calculate_priority_score(
 
 import httpx
 import time
+import asyncio
 
 _last_call_time = 0.0
+_geocode_cache: dict = {}  # Simple in-memory cache: (lat, lng) -> address string
 
 
 async def reverse_geocode(lat: float, lng: float) -> str:
     """
     Converts lat/lng into a human-readable address string using OpenStreetMap Nominatim.
-    Respects Nominatim's 1 req/sec usage policy.
+    Respects Nominatim's 1 req/sec usage policy using asyncio.sleep (non-blocking).
+    Caches results to skip redundant Nominatim calls for same coordinates.
     Returns a fallback 'lat, lng' string if lookup fails or times out.
     """
     global _last_call_time
-    # Respect Nominatim's 1 req/sec usage policy
+
+    # Round to 4 decimal places (~11m precision) for cache key
+    cache_key = (round(lat, 4), round(lng, 4))
+    if cache_key in _geocode_cache:
+        return _geocode_cache[cache_key]
+
+    # Respect Nominatim's 1 req/sec usage policy — use asyncio.sleep (non-blocking)
     elapsed = time.time() - _last_call_time
     if elapsed < 1:
-        time.sleep(1 - elapsed)
+        await asyncio.sleep(1 - elapsed)
 
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
@@ -121,7 +130,9 @@ async def reverse_geocode(lat: float, lng: float) -> str:
             )
             _last_call_time = time.time()
             data = response.json()
-            return data.get("display_name", f"{lat:.5f}, {lng:.5f}")
+            address = data.get("display_name", f"{lat:.5f}, {lng:.5f}")
+            _geocode_cache[cache_key] = address
+            return address
     except Exception:
         return f"{lat:.5f}, {lng:.5f}"  # graceful fallback, never block ticket creation on this
 

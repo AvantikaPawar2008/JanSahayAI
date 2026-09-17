@@ -67,7 +67,7 @@ export default function OfficerQueuePage() {
     // Refresh every 30 seconds
     const interval = setInterval(fetchQueue, 30000)
     return () => clearInterval(interval)
-  }, [departmentFilter, urgencyFilter, statusFilter, sortOrder, session])
+  }, [departmentFilter, urgencyFilter, statusFilter, sortOrder, session?.access_token])
 
   const handleRefresh = () => {
     setRefreshing(true)

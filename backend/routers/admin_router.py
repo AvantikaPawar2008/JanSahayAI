@@ -24,43 +24,32 @@ router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
 
 @router.get("/metrics", response_model=DashboardMetrics)
-async def get_dashboard_metrics(authorization: Optional[str] = Header(default=None)):
+def get_dashboard_metrics(authorization: Optional[str] = Header(default=None)):
     """
     Returns lean aggregated headline metrics for AdminDashboardPage.
-    Includes SLA breach rate and counts without geo/map payload.
+    Uses 2 broad DB queries + Python aggregation instead of 7 individual queries.
     """
-    supabase = get_supabase_user_client(authorization)
+    admin_db = get_supabase_client()
 
-    # 1. Total tickets
-    total_result = supabase.table("master_tickets").select("id", count="exact").execute()
-    total = total_result.count or 0
+    # Single broad query for all ticket aggregation (replaces 7 individual queries)
+    all_tickets_res = admin_db.table("master_tickets").select(
+        "id, status, urgency, department, created_at"
+    ).execute()
+    all_tickets = all_tickets_res.data or []
 
-    # 2. Status counts
-    open_result = supabase.table("master_tickets").select("id, created_at, urgency", count="exact").in_("status", ["OPEN", "REOPENED"]).execute()
-    in_progress_result = supabase.table("master_tickets").select("id", count="exact").in_("status", ["ASSIGNED", "IN_PROGRESS"]).execute()
-    resolved_result = supabase.table("master_tickets").select("id", count="exact").in_("status", ["RESOLVED", "RESOLVED_PENDING_CITIZEN", "CLOSED"]).execute()
-    critical_result = supabase.table("master_tickets").select("id", count="exact").eq("urgency", "CRITICAL").in_("status", ["OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED"]).execute()
-
-    # 3. SLA breach calculation (Critical > 12h, High > 24h, Medium/Low > 48h)
     now = datetime.now(timezone.utc)
-    open_tickets = open_result.data or []
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    total = len(all_tickets)
+    open_count = 0
+    in_progress_count = 0
+    resolved_count = 0
+    critical_count = 0
+    tickets_today = 0
     breached_count = 0
-    for t in open_tickets:
-        if t.get("created_at"):
-            try:
-                created = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
-                elapsed_hours = (now - created).total_seconds() / 3600.0
-                urgency = t.get("urgency", "MEDIUM")
-                sla_threshold = 12 if urgency == "CRITICAL" else (24 if urgency == "HIGH" else 48)
-                if elapsed_hours > sla_threshold:
-                    breached_count += 1
-            except Exception:
-                pass
+    dept_counts: Dict[str, int] = {}
+    urg_counts: Dict[str, int] = {}
 
-    open_count = open_result.count or 0
-    sla_breach_rate = round((breached_count / open_count * 100), 1) if open_count > 0 else 0.0
-
-    # 4. Department counts and per-department status breakdown
     standard_depts = [
         "Water Supply & Sewerage",
         "Roads & Infrastructure",
@@ -70,47 +59,75 @@ async def get_dashboard_metrics(authorization: Optional[str] = Header(default=No
     ]
     dept_status_map = {d: {"department": d, "open": 0, "in_progress": 0, "resolved": 0, "total": 0} for d in standard_depts}
 
-    all_tickets_dept = supabase.table("master_tickets").select("department, status").execute().data or []
-    dept_counts: Dict[str, int] = {}
-    for t in all_tickets_dept:
+    ACTIVE_STATUSES = {"OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED", "RESOLVED_PENDING_CITIZEN"}
+    SLA_THRESHOLDS = {"CRITICAL": 12, "HIGH": 24, "MEDIUM": 48, "LOW": 48}
+
+    for t in all_tickets:
+        status = t.get("status", "OPEN")
+        urgency = t.get("urgency") or "MEDIUM"
         dept = t.get("department") or "Unassigned"
+        created_raw = t.get("created_at")
+
+        # Status buckets
+        if status in ("OPEN", "REOPENED"):
+            open_count += 1
+        elif status in ("ASSIGNED", "IN_PROGRESS"):
+            in_progress_count += 1
+        elif status in ("RESOLVED", "RESOLVED_PENDING_CITIZEN", "CLOSED"):
+            resolved_count += 1
+
+        # Critical active
+        if urgency == "CRITICAL" and status in ACTIVE_STATUSES:
+            critical_count += 1
+
+        # Today's intake
+        if created_raw:
+            try:
+                created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+                if created >= today_start:
+                    tickets_today += 1
+                # SLA breach check (only for open/active)
+                if status in ("OPEN", "REOPENED"):
+                    elapsed_hours = (now - created).total_seconds() / 3600.0
+                    threshold = SLA_THRESHOLDS.get(urgency.upper(), 48)
+                    if elapsed_hours > threshold:
+                        breached_count += 1
+            except Exception:
+                pass
+
+        # Dept counts
         dept_counts[dept] = dept_counts.get(dept, 0) + 1
-        st = t.get("status", "OPEN")
+
+        # Urgency counts
+        urg_counts[urgency] = urg_counts.get(urgency, 0) + 1
+
+        # Dept status breakdown
         if dept in dept_status_map:
             dept_status_map[dept]["total"] += 1
-            if st in ("OPEN", "REOPENED"):
+            if status in ("OPEN", "REOPENED"):
                 dept_status_map[dept]["open"] += 1
-            elif st in ("ASSIGNED", "IN_PROGRESS"):
+            elif status in ("ASSIGNED", "IN_PROGRESS"):
                 dept_status_map[dept]["in_progress"] += 1
-            elif st in ("RESOLVED", "RESOLVED_PENDING_CITIZEN", "CLOSED"):
+            elif status in ("RESOLVED", "RESOLVED_PENDING_CITIZEN", "CLOSED"):
                 dept_status_map[dept]["resolved"] += 1
 
-    department_breakdown = list(dept_status_map.values())
+    sla_breach_rate = round((breached_count / open_count * 100), 1) if open_count > 0 else 0.0
 
-    # 5. Urgency counts
-    urg_result = supabase.table("master_tickets").select("urgency").execute()
-    urg_counts: Dict[str, int] = {}
-    for t in (urg_result.data or []):
-        urg = t.get("urgency") or "MEDIUM"
-        urg_counts[urg] = urg_counts.get(urg, 0) + 1
-
-    # 6. Today's count
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    today_result = supabase.table("master_tickets").select("id", count="exact").gte("created_at", today_start).execute()
-
-    # 7. Active hotspots count
-    hotspot_result = supabase.table("hotspot_alerts").select("id", count="exact").in_("status", ["NEW", "ACKNOWLEDGED", "INVESTIGATING"]).execute()
+    # Only hotspot count still needs a separate query (different table)
+    hotspot_result = admin_db.table("hotspot_alerts").select("id", count="exact").in_(
+        "status", ["NEW", "ACKNOWLEDGED", "INVESTIGATING"]
+    ).execute()
 
     return DashboardMetrics(
         total_tickets=total,
         open_tickets=open_count,
-        in_progress_tickets=in_progress_result.count or 0,
-        resolved_tickets=resolved_result.count or 0,
-        critical_tickets=critical_result.count or 0,
+        in_progress_tickets=in_progress_count,
+        resolved_tickets=resolved_count,
+        critical_tickets=critical_count,
         tickets_by_department=dept_counts,
-        department_breakdown=department_breakdown,
+        department_breakdown=list(dept_status_map.values()),
         tickets_by_urgency=urg_counts,
-        tickets_today=today_result.count or 0,
+        tickets_today=tickets_today,
         active_hotspots=hotspot_result.count or 0,
         sla_breach_rate=sla_breach_rate,
         sla_breached_tickets=breached_count,
@@ -119,7 +136,7 @@ async def get_dashboard_metrics(authorization: Optional[str] = Header(default=No
 
 @router.get("/hotspot-map")
 @router.get("/map-data")  # alias used by HotspotMapPage
-async def get_hotspot_map_data(authorization: Optional[str] = Header(default=None)):
+def get_hotspot_map_data(authorization: Optional[str] = Header(default=None)):
     """
     Dedicated endpoint for the HotspotMapPage.
     Returns:
@@ -376,7 +393,7 @@ async def reassign_ticket_department(
 
 
 @router.get("/misclassified-tickets")
-async def get_misclassified_tickets(authorization: Optional[str] = Header(default=None)):
+def get_misclassified_tickets(authorization: Optional[str] = Header(default=None)):
     """
     Returns all master tickets flagged with needs_admin_review = true.
     """

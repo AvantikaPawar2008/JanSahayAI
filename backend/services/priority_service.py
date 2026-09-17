@@ -117,17 +117,19 @@ def batch_recalculate_priorities(limit: int = 200) -> int:
         .execute()
     )
 
-    updated_count = 0
+    updates = []
     for t in (res.data or []):
         comps = compute_priority_components(
             created_at=t["created_at"],
             urgency=t.get("urgency", "MEDIUM"),
             duplicate_count=t.get("upvote_count", 1),
         )
-        supabase.table("master_tickets").update(comps).eq("id", t["id"]).execute()
-        updated_count += 1
+        updates.append({"id": t["id"], **comps})
 
-    return updated_count
+    if updates:
+        supabase.table("master_tickets").upsert(updates).execute()
+
+    return len(updates)
 
 
 def recalculate_department_priorities(department: Optional[str] = None, limit: int = 50) -> int:
@@ -146,16 +148,20 @@ def recalculate_department_priorities(department: Optional[str] = None, limit: i
             query = query.eq("department", department)
             
         res = query.limit(limit).execute()
-        updated_count = 0
+        # Batch all updates into a single upsert to avoid N individual DB round-trips
+        updates = []
         for t in (res.data or []):
             comps = compute_priority_components(
                 created_at=t["created_at"],
                 urgency=t.get("urgency", "MEDIUM"),
                 duplicate_count=t.get("upvote_count", 1),
             )
-            supabase.table("master_tickets").update(comps).eq("id", t["id"]).execute()
-            updated_count += 1
-        return updated_count
+            updates.append({"id": t["id"], **comps})
+
+        if updates:
+            supabase.table("master_tickets").upsert(updates).execute()
+
+        return len(updates)
     except Exception as e:
         logger.warning(f"On-demand priority recalculation skipped: {e}")
         return 0

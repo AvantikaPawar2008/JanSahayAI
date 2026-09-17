@@ -78,15 +78,15 @@ export default function AdminDashboardPage() {
     }
   }
 
+  const loadDashboardData = async () => {
+    await Promise.all([fetchMetrics(), fetchMisclassified()])
+  }
+
   useEffect(() => {
-    fetchMetrics()
-    fetchMisclassified()
-    const interval = setInterval(() => {
-      fetchMetrics()
-      fetchMisclassified()
-    }, 30000)
+    loadDashboardData()
+    const interval = setInterval(loadDashboardData, 30000)
     return () => clearInterval(interval)
-  }, [session])
+  }, [session?.access_token])
 
   const handleReassign = async (ticketId) => {
     const chosenDept = targetDepartments[ticketId] || 'Water Supply & Sewerage'
