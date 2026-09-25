@@ -77,7 +77,7 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
             )}
             {ticket.needs_admin_review && (
               <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-coral-50 text-coral-700 border border-coral-200 flex items-center gap-1">
-                <AlertTriangle className="w-3 h-3 text-coral-600" /> Needs Review
+                <AlertTriangle className="w-3 h-3 text-coral-600" /> Needs classification review
               </span>
             )}
           </div>

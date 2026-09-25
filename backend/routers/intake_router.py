@@ -24,7 +24,7 @@ from backend.services.triage_service import triage_complaint
 from backend.services.vision_service import analyze_complaint_photo
 from backend.services.notification_service import send_citizen_notification
 from backend.services.priority_service import compute_priority_components, update_ticket_priority
-from backend.services.geo_service import reverse_geocode
+from backend.services.geo_service import reverse_geocode, resolve_incident_location
 from backend.db.supabase_client import get_supabase_client
 from backend.models.schemas import IntakeResponse
 from datetime import datetime, timezone
@@ -41,24 +41,25 @@ async def submit_complaint(
     text: Optional[str] = Form(default=None),
     audio_file: Optional[UploadFile] = File(default=None),
     image_file: Optional[UploadFile] = File(default=None),
-    location_source: Optional[str] = Form(default="gps"),  # 'gps' | 'manual'
+    location_source: Optional[str] = Form(default="gps"),  # 'gps' | 'manual' | 'remote'
+    problem_lat: Optional[float] = Form(default=None),
+    problem_lng: Optional[float] = Form(default=None),
+    problem_landmark: Optional[str] = Form(default=None),
+    device_lat: Optional[float] = Form(default=None),
+    device_lng: Optional[float] = Form(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
     """
     Accepts a citizen complaint via text, audio, and/or photo with GPS.
-    text, audio_file, and image_file are fully independent — any combination is accepted.
+    Distinguishes the citizen's device logging location from the real exact problem location.
 
-    Pipeline: transcribe → embed → triage (for hard-filter) → dedup → store → notify
+    Pipeline: transcribe → resolve real problem location → embed → triage → dedup → store → notify
     """
     supabase = get_supabase_client()
     complaint_text = text or ""
     transcript = None
     translated_text = None
     image_url = None
-
-    # Normalise location_source
-    if location_source not in ("gps", "manual"):
-        location_source = "gps"
 
     # ----------------------------------------------------------------
     # Step 1: Transcribe audio if provided
@@ -88,13 +89,15 @@ async def submit_complaint(
         image_bytes = await image_file.read()
         if image_bytes:
             try:
+                from backend.services.storage_service import upload_image_bytes
                 file_ext = (image_file.filename or "photo.jpg").split(".")[-1]
                 storage_path = f"complaints/{uuid.uuid4()}.{file_ext}"
-                supabase.storage.from_("complaint-media").upload(
-                    storage_path, image_bytes,
-                    file_options={"content-type": image_file.content_type or "image/jpeg"}
+                image_url = upload_image_bytes(
+                    supabase=supabase,
+                    image_bytes=image_bytes,
+                    storage_path=storage_path,
+                    content_type=image_file.content_type or "image/jpeg",
                 )
-                image_url = supabase.storage.from_("complaint-media").get_public_url(storage_path)
             except Exception as e:
                 logger.error(f"Image upload failed: {e}")
 
@@ -115,14 +118,33 @@ async def submit_complaint(
         )
 
     # ----------------------------------------------------------------
+    # Step 2c: Resolve REAL exact problem location vs device logging position
+    # (Citizen can report an issue from home/office or commute)
+    # ----------------------------------------------------------------
+    loc_resolution = await resolve_incident_location(
+        complaint_text=complaint_text,
+        client_lat=lat,
+        client_lng=lng,
+        location_source=location_source or "gps",
+        explicit_problem_lat=problem_lat,
+        explicit_problem_lng=problem_lng,
+        explicit_landmark=problem_landmark,
+    )
+    real_lat = loc_resolution["real_lat"]
+    real_lng = loc_resolution["real_lng"]
+    final_location_source = loc_resolution["location_source"]
+    logging_lat = device_lat if device_lat is not None else lat
+    logging_lng = device_lng if device_lng is not None else lng
+
+    # ----------------------------------------------------------------
     # Step 3: Generate text embedding
     # ----------------------------------------------------------------
     text_embedding = get_embedding(complaint_text)
 
     # ----------------------------------------------------------------
-    # Step 4: Triage FIRST (needed for department/sub_category hard-filter in dedup)
+    # Step 4: Triage FIRST using the REAL problem coordinates
     # ----------------------------------------------------------------
-    triage_result = await triage_complaint(complaint_text, lat, lng)
+    triage_result = await triage_complaint(complaint_text, real_lat, real_lng)
 
     # Look up or create citizen record for tracking and citizen history (RLS compatibility)
     citizen_id = None
@@ -134,8 +156,6 @@ async def submit_complaint(
             user_res = supabase.auth.get_user(token_str)
             if user_res and user_res.user:
                 auth_user_id = str(user_res.user.id)
-                # Ensure record exists in citizens table with id = auth.uid()
-                # so FK constraint on ticket_reports.citizen_id holds and RLS policies match
                 cit_phone = citizen_phone or f"+91-{auth_user_id[:8]}"
                 supabase.table("citizens").upsert({
                     "id": auth_user_id,
@@ -164,14 +184,18 @@ async def submit_complaint(
             logger.debug(f"Citizen record handling skipped: {e}")
 
     # ----------------------------------------------------------------
-    # Step 5: Check for duplicates — department + sub_category hard-filter applied
+    # Step 5: Check for duplicates — using real problem location + cross-location dedup
     # ----------------------------------------------------------------
     duplicate = await find_duplicate(
-        lat=lat,
-        lng=lng,
+        lat=real_lat,
+        lng=real_lng,
         text_embedding=text_embedding,
         department=triage_result.department,
         sub_category=triage_result.sub_category,
+        new_report_text=translated_text or text or transcript,
+        device_lat=logging_lat,
+        device_lng=logging_lng,
+        location_source=final_location_source,
     )
 
     if duplicate:
@@ -224,14 +248,14 @@ async def submit_complaint(
             "translated_text": translated_text,
             "image_url": image_url,
             "text_embedding": text_embedding,
-            "lat": lat,
-            "lng": lng,
+            "lat": logging_lat,
+            "lng": logging_lng,
             **({"citizen_id": citizen_id} if citizen_id else {}),
         }
         # Graceful: include location_source only if column exists
         try:
             supabase.table("ticket_reports").insert(
-                {**report_data, "location_source": location_source}
+                {**report_data, "location_source": final_location_source}
             ).execute()
         except Exception:
             supabase.table("ticket_reports").insert(report_data).execute()
@@ -276,14 +300,14 @@ async def submit_complaint(
         duplicate_count=1,
     )
 
-    # Step 6: Create master ticket
+    # Step 6: Create master ticket at the REAL EXACT problem location
     master_ticket_data = {
         "category": triage_result.category,
         "department": triage_result.department,
         "urgency": triage_result.urgency,
         "status": "OPEN",
-        "lat": lat,
-        "lng": lng,
+        "lat": real_lat,
+        "lng": real_lng,
         "sop_steps": triage_result.sop_steps,
         "tools_required": triage_result.tools_required,
         "citizen_sms_draft": triage_result.citizen_sms_draft,
@@ -321,18 +345,19 @@ async def submit_complaint(
     master_ticket_id = master_ticket["id"]
 
     # Step 6b: Reverse geocode once for human-readable address on novel tickets
-    address_str = f"{lat:.5f}, {lng:.5f}"
-    try:
-        address_str = await reverse_geocode(lat, lng)
-    except Exception as e:
-        logger.warning(f"Reverse geocode failed, fallback to coordinates: {e}")
+    address_str = loc_resolution.get("resolved_address") or f"{real_lat:.5f}, {real_lng:.5f}"
+    if not loc_resolution.get("resolved_address"):
+        try:
+            address_str = await reverse_geocode(real_lat, real_lng)
+        except Exception as e:
+            logger.warning(f"Reverse geocode failed, fallback to coordinates: {e}")
 
     try:
         supabase.table("master_tickets").update({"address_text": address_str}).eq("id", master_ticket_id).execute()
     except Exception as e:
         logger.warning(f"Could not update address_text on master ticket {master_ticket_id}: {e}")
 
-    # Step 7: Insert the citizen's report
+    # Step 7: Insert the citizen's report with logging device position
     report_data = {
         "master_ticket_id": master_ticket_id,
         "raw_text": text,
@@ -340,14 +365,14 @@ async def submit_complaint(
         "translated_text": translated_text,
         "image_url": image_url,
         "text_embedding": text_embedding,
-        "lat": lat,
-        "lng": lng,
+        "lat": logging_lat,
+        "lng": logging_lng,
         **({"citizen_id": citizen_id} if citizen_id else {}),
     }
     # Graceful: include location_source only if column exists
     try:
         supabase.table("ticket_reports").insert(
-            {**report_data, "location_source": location_source}
+            {**report_data, "location_source": final_location_source}
         ).execute()
     except Exception:
         supabase.table("ticket_reports").insert(report_data).execute()

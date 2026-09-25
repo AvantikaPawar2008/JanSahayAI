@@ -25,6 +25,10 @@ class Settings(BaseSettings):
 
     # Tunable thresholds
     dedup_similarity_threshold: float = Field(default=0.80, env="DEDUP_SIMILARITY_THRESHOLD")
+    dedup_high_confidence_threshold: float = Field(default=0.90, env="DEDUP_HIGH_CONFIDENCE_THRESHOLD")
+    dedup_low_confidence_threshold: float = Field(default=0.60, env="DEDUP_LOW_CONFIDENCE_THRESHOLD")
+    laya_duplicate_confirm_threshold: float = Field(default=0.60, env="LAYA_DUPLICATE_CONFIRM_THRESHOLD")
+    laya_low_confidence_review_threshold: float = Field(default=0.55, env="LAYA_LOW_CONFIDENCE_REVIEW_THRESHOLD")
     geofence_radius_meters: float = Field(default=150.0, env="GEOFENCE_RADIUS_METERS")
     hotspot_eps_meters: float = Field(default=100.0, env="HOTSPOT_EPS_METERS")
     hotspot_min_points: int = Field(default=5, env="HOTSPOT_MIN_POINTS")

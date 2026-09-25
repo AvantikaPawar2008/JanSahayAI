@@ -67,18 +67,20 @@ graph TB
 * **WhatsApp Webhook Integration:** Submit complaints directly over WhatsApp without downloading an application.
 * **Automatic Geolocation:** Browser/device GPS locks latitude and longitude automatically.
 
-### 🔄 2. Smart 3-Stage Spatial & Semantic Deduplication
-When a new report arrives, the backend runs a 3-stage pipeline:
-1. **Stage 1 (Spatial Filter):** PostGIS `ST_DWithin` queries active tickets within a **100m radius**.
+### 🔄 2. Smart Spatial & Vector Deduplication with Laya Confirmation
+When a new report arrives, the backend runs a hybrid pipeline:
+1. **Stage 1 (Spatial Filter):** PostGIS `ST_DWithin` queries active tickets within a **100m radius** (automatically expands to **200m** for linear defects like water leaks and power lines).
 2. **Stage 2 (Hard Category Filter):** Enforces strict department and defect sub-category matching (e.g., pothole reports will never merge with a nearby water leak).
-3. **Stage 3 (Semantic Vector Similarity):** Generates 384-dimensional dense text embeddings via `sentence-transformers/all-MiniLM-L6-v2` and evaluates cosine similarity against all candidate reports (Threshold $\ge 0.80$).
-* **Auto-Upvote Conversion:** Matching tickets are converted into an **Upvote** on the existing Master Ticket, increasing its priority score while instantly notifying the reporter.
+3. **Stage 3 (Three-Zone Semantic Decision with Laya Ambiguity Gate):**
+   - **High Confidence ($\ge 0.90$):** Auto-merged as an upvote directly (skips Laya).
+   - **Low Confidence ($< 0.60$):** Auto-rejected as a distinct issue (skips Laya).
+   - **Ambiguous Zone ($0.60 \le \text{similarity} < 0.90$):** Evaluated by **Laya** (`convaiinnovations/laya` `noul` decision model) to confirm whether both reports describe the identical physical civic defect.
+* **Auto-Upvote Conversion:** Confirmed duplicate reports are merged into the existing Master Ticket, increasing its public upvote count and recalculating priority.
 
-### 🤖 3. AI Auto-Triage & Field SOP Generation
-* **Department Classification:** Automatically assigns tickets to 1 of 5 municipal departments: *Water Supply & Sewerage, Roads & Infrastructure, Solid Waste Management, Electrical & Streetlighting, Health & Sanitation*.
-* **Urgency Scoring:** Assigns severity levels: `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
-* **Actionable Field SOPs:** LLM generates 3 sequential Standard Operating Procedure (SOP) steps for field technicians along with required equipment lists.
-* **Citizen SMS Notifications:** Auto-drafts localized status SMS notifications.
+### 🤖 3. Laya Typed-Decision Classification & Field SOP Generation
+* **Laya Typed Department Classification:** Uses local non-generative `convaiinnovations/laya` (`choice` question) across 5 municipal departments in a single forward pass (~33ms, no API key). If confidence $< 0.55$, automatically flags `needs_admin_review = true`.
+* **Laya Calibrated Urgency Scoring:** Evaluates safety risk on an ordinal scale (`score` question) for `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
+* **Constrained Field SOP & SMS Generation:** Groq LLM receives pre-classified department and urgency to generate strictly 3-step actionable SOPs, required tools list, and citizen SMS drafts.
 
 ### 📈 4. Sybil-Resistant Dynamic Priority Scoring Engine
 Calculates master ticket priority ordering dynamically:

@@ -68,10 +68,14 @@ export default function TrackTicketPage() {
       })
 
       const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to submit response')
+      }
       // Refresh ticket
       await searchTicket(ticket.id)
     } catch (err) {
       console.error('Response failed:', err)
+      setError(err.message)
     } finally {
       setResponding(false)
     }
@@ -212,31 +216,119 @@ export default function TrackTicketPage() {
             height="250px"
           />
 
+          {/* Verification Proof Photos (if uploaded by officer) */}
+          {ticket.verification_photos && ticket.verification_photos.length > 0 && (
+            <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold text-charcoal-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  Field Verification Photos
+                </span>
+                <span className="text-xs text-charcoal-400">
+                  {ticket.verification_photos.length} photo{ticket.verification_photos.length === 1 ? '' : 's'} recorded
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {ticket.verification_photos.map((p, idx) => (
+                  <div key={p.id || idx} className="rounded-xl border border-ivory-200 bg-ivory-50/60 p-2.5 overflow-hidden">
+                    <div className="flex items-center justify-between text-xs mb-2 px-1">
+                      <span className={`font-bold uppercase tracking-wider text-[10px] px-2.5 py-0.5 rounded-full ${
+                        p.photo_type === 'after'
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-charcoal-200 text-charcoal-800'
+                      }`}>
+                        {p.photo_type === 'after' ? 'After Resolution' : 'Before Work'}
+                      </span>
+                      {p.created_at && (
+                        <span className="text-charcoal-400 font-mono text-[11px]">
+                          {new Date(p.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })} {new Date(p.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      )}
+                    </div>
+                    {p.photo_url ? (
+                      <img
+                        src={p.photo_url}
+                        alt={`${p.photo_type} proof`}
+                        className="w-full h-48 object-cover rounded-lg border border-ivory-300 shadow-inner"
+                      />
+                    ) : (
+                      <div className="w-full h-36 bg-ivory-200/50 rounded-lg flex items-center justify-center text-charcoal-400 text-xs">
+                        Proof photo recorded
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Citizen Action — Verify or Reopen */}
           {ticket.status === 'RESOLVED_PENDING_CITIZEN' && (
-            <div className="bg-gradient-to-br from-emerald-50/80 via-white to-ivory-100 rounded-2xl border border-emerald-200 shadow-card p-6 animate-slide-up">
-              <h3 className="font-bold text-charcoal-900 text-base mb-2">🎉 Issue marked as resolved by field team</h3>
+            <div className="bg-gradient-to-br from-emerald-50/90 via-white to-ivory-100 rounded-2xl border border-emerald-300 shadow-card p-6 animate-slide-up">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-2xl">🎉</span>
+                <div>
+                  <h3 className="font-bold text-charcoal-900 text-base">Issue Marked as Resolved</h3>
+                  <p className="text-xs text-emerald-700 font-medium">Action Required: Verify the work on site</p>
+                </div>
+              </div>
               <p className="text-sm text-charcoal-600 mb-5 leading-relaxed">
-                The municipal field officer has completed work on this issue. Please verify whether the resolution meets standards on site.
+                The municipal field officer has submitted photographic proof of work. Please review the photo evidence above and confirm if the issue has been resolved to your satisfaction.
               </p>
               <div className="flex gap-3">
                 <button
                   onClick={() => handleCitizenResponse('verified')}
                   disabled={responding}
-                  className="btn-primary flex-1 shadow-sm"
+                  className="btn-primary flex-1 shadow-sm py-2.5"
                 >
                   <CheckCircle2 className="w-4 h-4 text-white" />
-                  {responding ? 'Processing...' : 'Looks Good — Close Ticket'}
+                  {responding ? 'Submitting...' : 'Looks Good — Close Ticket'}
                 </button>
                 <button
                   onClick={() => handleCitizenResponse('reopen')}
                   disabled={responding}
-                  className="btn-danger flex-1"
+                  className="btn-danger flex-1 py-2.5"
                 >
                   <RotateCcw className="w-4 h-4" />
-                  {responding ? 'Processing...' : 'Not Fixed — Reopen Issue'}
+                  {responding ? 'Submitting...' : 'Not Fixed — Reopen Issue'}
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Reopened Notification */}
+          {ticket.status === 'REOPENED' && (
+            <div className="bg-amber-50/90 border border-amber-200 rounded-2xl p-6 shadow-card animate-slide-up">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center">
+                  <RotateCcw className="w-5 h-5 text-amber-700" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-amber-950 text-base">Issue Reopened</h3>
+                  <p className="text-xs text-amber-800 font-semibold">Priority Supervisory Review Active</p>
+                </div>
+              </div>
+              <p className="text-sm text-amber-900/80 leading-relaxed">
+                You indicated that this issue was not adequately fixed. It has been escalated to municipal supervisors, given elevated priority, and will be reassigned for inspection and re-work.
+              </p>
+            </div>
+          )}
+
+          {/* Fully Resolved Notification */}
+          {ticket.status === 'RESOLVED' && (
+            <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-6 shadow-card animate-slide-up">
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-700" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-emerald-950 text-base">Ticket Successfully Closed</h3>
+                  <p className="text-xs text-emerald-800 font-medium">Resolution Verified</p>
+                </div>
+              </div>
+              <p className="text-sm text-emerald-900/80 leading-relaxed">
+                This grievance has been confirmed resolved and officially closed. Thank you for helping keep your city clean and functioning!
+              </p>
             </div>
           )}
         </div>

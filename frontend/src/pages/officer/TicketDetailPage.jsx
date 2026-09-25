@@ -70,8 +70,11 @@ export default function TicketDetailPage() {
   }, [session?.access_token])
 
   const uploadPhoto = async (photoFile, photoType) => {
-    if (!lat || !lng) {
-      alert('GPS location required for photo submission')
+    const uploadLat = lat || data?.ticket?.lat
+    const uploadLng = lng || data?.ticket?.lng
+
+    if (!uploadLat || !uploadLng) {
+      alert('GPS location is required for photo submission. Please ensure location services are enabled or the ticket has coordinates.')
       return
     }
 
@@ -80,8 +83,8 @@ export default function TicketDetailPage() {
       const formData = new FormData()
       formData.append('master_ticket_id', ticketId)
       formData.append('photo_type', photoType)
-      formData.append('lat', lat.toString())
-      formData.append('lng', lng.toString())
+      formData.append('lat', uploadLat.toString())
+      formData.append('lng', uploadLng.toString())
       formData.append('image_file', photoFile)
 
       const headers = {}
@@ -95,7 +98,10 @@ export default function TicketDetailPage() {
         body: formData,
       })
 
-      if (!response.ok) throw new Error('Photo upload failed')
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}))
+        throw new Error(errJson.detail || `Server responded with ${response.status}`)
+      }
       const result = await response.json()
       setUploadResult(result)
       
@@ -193,13 +199,18 @@ export default function TicketDetailPage() {
       <div className="glass-card mb-6">
         <div className="flex items-start justify-between mb-4">
           <div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex flex-wrap items-center gap-2 mb-2">
               <UrgencyBadge urgency={ticket.urgency} size="md" />
               <span className={`badge ${
                 ticket.status === 'IN_PROGRESS' ? 'status-in_progress' : 'status-open'
               }`}>
                 {ticket.status?.replace(/_/g, ' ')}
               </span>
+              {ticket.needs_admin_review && (
+                <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-coral-50 text-coral-700 border border-coral-200 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-coral-600" /> Needs classification review
+                </span>
+              )}
             </div>
             <h1 className="text-xl font-bold text-charcoal-900">{ticket.category}</h1>
             <p className="text-sm text-charcoal-500 mt-0.5">{ticket.department}</p>

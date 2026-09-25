@@ -224,14 +224,16 @@ async def submit_proof_of_work(
     storage_path = f"verification/{master_ticket_id}/{photo_type}_{uuid.uuid4()}.{file_ext}"
 
     try:
-        supabase.storage.from_("complaint-media").upload(
-            storage_path, image_bytes,
-            file_options={"content-type": image_file.content_type or "image/jpeg"}
+        from backend.services.storage_service import upload_image_bytes
+        image_url = upload_image_bytes(
+            supabase=supabase,
+            image_bytes=image_bytes,
+            storage_path=storage_path,
+            content_type=image_file.content_type or "image/jpeg",
         )
-        image_url = supabase.storage.from_("complaint-media").get_public_url(storage_path)
     except Exception as e:
         logger.error(f"Photo upload failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to upload photo")
+        raise HTTPException(status_code=500, detail=f"Failed to upload photo: {e}")
 
     # Insert verification photo record
     photo_data = {

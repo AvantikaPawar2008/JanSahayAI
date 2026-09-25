@@ -1,25 +1,36 @@
 """Spatial + semantic deduplication — finds if a new complaint matches an existing master ticket.
 
-Two-stage filter:
+Multi-stage filter:
   Stage 1 — spatial: only candidates within DEDUP_RADIUS_METERS (PostGIS ST_DWithin)
   Stage 2 — hard filter: same department AND same sub_category (if available)
-  Stage 3 — semantic: cosine similarity >= DEDUP_SIMILARITY_THRESHOLD
+  Stage 3 — three-zone semantic confirmation:
+            - Similarity >= 0.90: Auto-duplicate (skip Laya)
+            - Similarity < 0.60: Auto-new-ticket (skip Laya)
+            - 0.60 <= Similarity < 0.90: Ambiguous zone — final confirmation via Laya (noul)
 
 Department/sub_category match is a hard filter evaluated BEFORE similarity — this prevents two
 unrelated issues near each other (e.g. pothole vs. water leak on the same street) from ever
 merging into one master ticket.
 """
 
+import json
+import logging
+from typing import Optional
 from backend.db.supabase_client import get_supabase_client
 from backend.services.embedding_service import compute_cosine_similarity
+from backend.services.laya_service import confirm_duplicate
+from backend.services.geo_service import haversine_distance
 from backend.config import get_settings
-from typing import Optional
+
+logger = logging.getLogger("civicpulse.dedup")
 
 # ============================================================
 # DEDUP TUNING CONSTANTS — adjust these live during testing
 # ============================================================
-DEDUP_RADIUS_METERS = 100          # spatial search radius (meters)
-DEDUP_SIMILARITY_THRESHOLD = 0.80  # minimum cosine similarity for a text match
+DEDUP_RADIUS_METERS = 100               # spatial search radius (meters)
+DEDUP_HIGH_CONFIDENCE_THRESHOLD = 0.90  # auto-duplicate, skip Laya
+DEDUP_LOW_CONFIDENCE_THRESHOLD = 0.60   # auto-new-ticket, skip Laya
+# Between these two: ambiguous zone, ask Laya for a final confirmation
 
 # Image similarity blending weights (used when both tickets have image embeddings)
 DEDUP_W_TEXT = 0.4
@@ -34,16 +45,22 @@ async def find_duplicate(
     sub_category: Optional[str] = None,
     image_embedding: Optional[list[float]] = None,
     radius_meters: float = DEDUP_RADIUS_METERS,
+    new_report_text: Optional[str] = None,
+    device_lat: Optional[float] = None,
+    device_lng: Optional[float] = None,
+    location_source: Optional[str] = None,
 ) -> dict | None:
     """
     Checks for duplicate master tickets near the given location with the same
     department, sub_category, and similar text.
 
-    Two-stage pipeline:
+    Three-stage pipeline:
       Stage 1 — spatial: PostGIS ST_DWithin within radius_meters
       Stage 2 — hard filter: department must match; sub_category must match if both sides have it
-      Stage 3 — semantic similarity >= DEDUP_SIMILARITY_THRESHOLD
-                 (blends image similarity if image_embedding is provided)
+      Stage 3 — three-zone semantic decision:
+                 - >= 0.90: Confident duplicate, merge immediately (no Laya call)
+                 - < 0.60: Confident non-match, skip (no Laya call)
+                 - 0.60 - 0.90: Ambiguous zone, invoke Laya typed-decision (noul) confirmation
 
     Args:
         lat: Latitude of new complaint
@@ -53,12 +70,16 @@ async def find_duplicate(
         sub_category: Specific defect sub-type (from triage) — used as hard filter when present
         image_embedding: Optional image embedding (for blended similarity scoring)
         radius_meters: Spatial search radius (default DEDUP_RADIUS_METERS)
+        new_report_text: Raw or translated text of incoming report for Laya comparison
 
     Returns:
         dict with master_ticket data if duplicate found, None otherwise
     """
     settings = get_settings()
     supabase = get_supabase_client()
+
+    high_thresh = getattr(settings, "dedup_high_confidence_threshold", DEDUP_HIGH_CONFIDENCE_THRESHOLD)
+    low_thresh = getattr(settings, "dedup_low_confidence_threshold", DEDUP_LOW_CONFIDENCE_THRESHOLD)
 
     # Linear infrastructure sub-categories that can span longer distances
     LINEAR_SUBCATEGORIES = {
@@ -75,28 +96,58 @@ async def find_duplicate(
     # ------------------------------------------------------------------
     # Stage 1 — Spatial: find nearby master tickets via PostGIS
     # ------------------------------------------------------------------
-    rpc_params = {
-        "search_lat": lat,
-        "search_lng": lng,
-        "radius_m": radius_meters,
-        "search_department": department,
-        "search_sub_category": sub_category,
-    }
-    nearby_query = supabase.rpc("find_nearby_tickets", rpc_params).execute()
-
-    candidates = nearby_query.data or []
-
-    # Dynamic spatial expansion: if no candidates in 100m, allow linear defects to search up to 200m
-    if not candidates and sub_category in LINEAR_SUBCATEGORIES and radius_meters <= DEDUP_RADIUS_METERS:
-        expanded_params = {
+    candidates = []
+    try:
+        rpc_params = {
             "search_lat": lat,
             "search_lng": lng,
-            "radius_m": radius_meters * 2.0,  # 200m
+            "radius_m": radius_meters,
             "search_department": department,
             "search_sub_category": sub_category,
         }
-        expanded_query = supabase.rpc("find_nearby_tickets", expanded_params).execute()
-        candidates = expanded_query.data or []
+        nearby_query = supabase.rpc("find_nearby_tickets", rpc_params).execute()
+        candidates = nearby_query.data or []
+
+        # Dynamic spatial expansion: if no candidates in 100m, allow linear defects to search up to 200m
+        if not candidates and sub_category in LINEAR_SUBCATEGORIES and radius_meters <= DEDUP_RADIUS_METERS:
+            expanded_params = {
+                "search_lat": lat,
+                "search_lng": lng,
+                "radius_m": radius_meters * 2.0,  # 200m
+                "search_department": department,
+                "search_sub_category": sub_category,
+            }
+            expanded_query = supabase.rpc("find_nearby_tickets", expanded_params).execute()
+            candidates = expanded_query.data or []
+    except Exception as geo_err:
+        logger.warning(f"Spatial query fallback engaged: {geo_err}")
+        candidates = []
+
+    # ------------------------------------------------------------------
+    # Stage 1b — Remote & Cross-Location Candidate Retrieval
+    # Citizens frequently report civic issues from home, office, or commute.
+    # The device logging location may be kilometers away from the real defect.
+    # We query open master tickets in the same department to evaluate semantic equivalence.
+    # ------------------------------------------------------------------
+    if department:
+        try:
+            open_query = (
+                supabase.table("master_tickets")
+                .select("id, category, sub_category, department, urgency, status, lat, lng, upvote_count, created_at, description, text_embedding")
+                .eq("department", department)
+                .neq("status", "RESOLVED")
+                .neq("status", "CLOSED")
+            )
+            if sub_category:
+                open_query = open_query.or_(f"sub_category.eq.{sub_category},sub_category.is.null")
+
+            open_res = open_query.execute()
+            existing_cids = {c["id"] for c in candidates}
+            for row in (open_res.data or []):
+                if row["id"] not in existing_cids:
+                    candidates.append(row)
+        except Exception as open_err:
+            logger.warning(f"Department open tickets fetch error: {open_err}")
 
     if not candidates:
         return None
@@ -114,7 +165,6 @@ async def find_duplicate(
     if sub_category:
         # Sub-category hard filter: Only candidates with the identical sub_category
         # or legacy candidates lacking a sub_category are eligible.
-        # Candidates with an explicitly different sub_category are strictly rejected.
         candidates = [
             c for c in candidates
             if not c.get("sub_category") or c.get("sub_category") == sub_category
@@ -124,63 +174,81 @@ async def find_duplicate(
         return None
 
     # ------------------------------------------------------------------
-    # Stage 3 — Semantic similarity: compare against canonical or all linked reports
+    # Stage 3 — Three-Zone Semantic Evaluation with Laya Ambiguity Gate
     # ------------------------------------------------------------------
     candidate_ids = [ticket["id"] for ticket in candidates]
 
-    # Batch fetch all candidate reports to compare against all descriptions (eliminates recency bias)
+    # Batch fetch all candidate reports to compare against all descriptions
     reports_result = (
         supabase.table("ticket_reports")
-        .select("master_ticket_id, text_embedding, created_at")
+        .select("master_ticket_id, text_embedding, raw_text, translated_text, created_at")
         .in_("master_ticket_id", candidate_ids)
-        .not_.is_("text_embedding", "null")
         .order("created_at", desc=False)
         .execute()
     )
 
     candidate_embeddings_map: dict[str, list[list[float]]] = {cid: [] for cid in candidate_ids}
+    candidate_descriptions: dict[str, list[str]] = {cid: [] for cid in candidate_ids}
 
-    # Also check if master_tickets table already has canonical text_embedding
+    # Also check if master_tickets table already has canonical text_embedding or description
     try:
         mt_res = (
             supabase.table("master_tickets")
-            .select("id, text_embedding")
+            .select("id, description, text_embedding")
             .in_("id", candidate_ids)
-            .not_.is_("text_embedding", "null")
             .execute()
         )
         for row in (mt_res.data or []):
             m_id = row.get("id")
-            emb = row.get("text_embedding")
-            if m_id and emb:
-                if isinstance(emb, str):
-                    import json
-                    try:
-                        emb = json.loads(emb)
-                    except Exception:
-                        emb = None
+            if m_id:
+                desc = row.get("description")
+                if desc:
+                    candidate_descriptions.setdefault(m_id, []).append(desc)
+                emb = row.get("text_embedding")
                 if emb:
-                    candidate_embeddings_map[m_id].append(emb)
+                    if isinstance(emb, str):
+                        try:
+                            emb = json.loads(emb)
+                        except Exception:
+                            emb = None
+                    if emb:
+                        candidate_embeddings_map[m_id].append(emb)
     except Exception:
         pass
 
     for rep in (reports_result.data or []):
         m_id = rep.get("master_ticket_id")
-        if m_id and rep.get("text_embedding"):
-            emb = rep["text_embedding"]
+        if not m_id:
+            continue
+        text_content = rep.get("translated_text") or rep.get("raw_text")
+        if text_content:
+            candidate_descriptions.setdefault(m_id, []).append(text_content)
+        emb = rep.get("text_embedding")
+        if emb:
             if isinstance(emb, str):
-                import json
                 try:
                     emb = json.loads(emb)
                 except Exception:
                     continue
             candidate_embeddings_map.setdefault(m_id, []).append(emb)
 
-    best_match = None
-    best_similarity = 0.0
-
     for ticket in candidates:
         ticket_id = ticket["id"]
+
+        # If both the candidate and incoming report have verified real problem locations
+        # (via map pin or geocoded landmark) and are over 1200m apart, they represent
+        # physically separate sites in the city (e.g. Pune Station vs Akurdi Station).
+        cand_lat = ticket.get("lat")
+        cand_lng = ticket.get("lng")
+        if cand_lat is not None and cand_lng is not None and lat is not None and lng is not None:
+            problem_dist = haversine_distance(lat, lng, cand_lat, cand_lng)
+            if location_source != "remote" and problem_dist > 1200.0:
+                logger.info(
+                    f"Skipping candidate {ticket_id}: problem distance {problem_dist:.1f}m > 1200m "
+                    f"(separate physical incident locations in city)"
+                )
+                continue
+
         stored_embeddings_list = candidate_embeddings_map.get(ticket_id, [])
         if not stored_embeddings_list:
             continue
@@ -194,13 +262,62 @@ async def find_duplicate(
 
         final_similarity = max_ticket_similarity
 
-        threshold = settings.dedup_similarity_threshold
-        if final_similarity >= threshold and final_similarity > best_similarity:
-            best_similarity = final_similarity
-            best_match = ticket
-            best_match["similarity_score"] = final_similarity
+        # --- Zone 1: Confident Duplicate (>= 0.90) ---
+        if final_similarity >= high_thresh:
+            logger.info(
+                f"✅ Confident duplicate match found: Ticket {ticket_id} (sim={final_similarity:.4f} >= {high_thresh}). "
+                "Skipping Laya confirmation."
+            )
+            ticket["similarity_score"] = final_similarity
+            ticket["laya_evaluated"] = False
+            return ticket
 
-    return best_match
+        # --- Zone 2: Confident Non-Match (< 0.60) ---
+        if final_similarity < low_thresh:
+            logger.info(
+                f"❌ Confident non-match: Ticket {ticket_id} (sim={final_similarity:.4f} < {low_thresh}). "
+                "Skipping Laya confirmation."
+            )
+            continue
+
+        # --- Zone 3: Ambiguous Zone (0.60 <= similarity < 0.90) ---
+        # Ask Laya for a typed decision confirmation
+        logger.info(
+            f"🔍 Ambiguous zone match: Ticket {ticket_id} (sim={final_similarity:.4f} in [{low_thresh}, {high_thresh}]). "
+            "Calling Laya for final duplicate confirmation..."
+        )
+        descriptions = candidate_descriptions.get(ticket_id, [])
+        candidate_text = descriptions[0] if descriptions else ticket.get("category", "Civic Complaint")
+
+        if new_report_text:
+            laya_result = confirm_duplicate(
+                new_report_text=new_report_text,
+                candidate_ticket_text=candidate_text,
+            )
+            if laya_result.get("is_duplicate"):
+                logger.info(
+                    f"🎯 Laya confirmed duplicate: Ticket {ticket_id} "
+                    f"(p_true={laya_result.get('confidence', 0.0):.4f} >= threshold)"
+                )
+                ticket["similarity_score"] = final_similarity
+                ticket["laya_evaluated"] = True
+                ticket["laya_confirmed"] = True
+                ticket["laya_confidence"] = laya_result.get("confidence")
+                return ticket
+            else:
+                logger.info(
+                    f"🚫 Laya rejected duplicate: Ticket {ticket_id} "
+                    f"(p_true={laya_result.get('confidence', 0.0):.4f} < threshold)"
+                )
+                continue
+        else:
+            # Fallback if text not provided: default to threshold check
+            threshold = getattr(settings, "dedup_similarity_threshold", 0.80)
+            if final_similarity >= threshold:
+                ticket["similarity_score"] = final_similarity
+                return ticket
+
+    return None
 
 
 async def get_ticket_upvote_count(master_ticket_id: str) -> int:
@@ -230,4 +347,3 @@ async def get_ticket_upvote_count(master_ticket_id: str) -> int:
 async def increment_upvote(master_ticket_id: str) -> int:
     """Deprecated: Upvote count is now automatically maintained by database trigger on ticket_reports."""
     return await get_ticket_upvote_count(master_ticket_id)
-

@@ -77,20 +77,21 @@ export default function ReportIssuePage() {
   const [pinLat, setPinLat] = useState(null)
   const [pinLng, setPinLng] = useState(null)
   const [pinTouched, setPinTouched] = useState(false)
+  const [reportingMode, setReportingMode] = useState('at_site') // 'at_site' | 'elsewhere'
   const [locationSource, setLocationSource] = useState('gps')
   const [addressQuery, setAddressQuery] = useState('')
   const [addressSearching, setAddressSearching] = useState(false)
   const [addressError, setAddressError] = useState(null)
   const geocodeTimerRef = useRef(null)
 
-  // Best-effort live GPS: use as initial suggestion only if citizen hasn't already interacted with the pin
+  // Best-effort live GPS: use as initial suggestion only if citizen is at site and hasn't manually moved pin
   useEffect(() => {
-    if (!pinTouched && gpsLat && gpsLng) {
+    if (!pinTouched && gpsLat && gpsLng && reportingMode === 'at_site') {
       setPinLat(gpsLat)
       setPinLng(gpsLng)
       setLocationSource('gps')
     }
-  }, [gpsLat, gpsLng, pinTouched])
+  }, [gpsLat, gpsLng, pinTouched, reportingMode])
 
   // Fallback to default city center if GPS is denied/unavailable and no pin placed yet
   useEffect(() => {
@@ -179,8 +180,17 @@ export default function ReportIssuePage() {
       const formData = new FormData()
       formData.append('lat', finalLat.toString())
       formData.append('lng', finalLng.toString())
+      formData.append('problem_lat', finalLat.toString())
+      formData.append('problem_lng', finalLng.toString())
+      if (gpsLat && gpsLng) {
+        formData.append('device_lat', gpsLat.toString())
+        formData.append('device_lng', gpsLng.toString())
+      }
       formData.append('citizen_phone', phone)
       formData.append('location_source', locationSource)
+      if (addressQuery.trim()) {
+        formData.append('problem_landmark', addressQuery.trim())
+      }
 
       if (text) formData.append('text', text)
       if (audioBlob) formData.append('audio_file', audioBlob, 'recording.webm')
@@ -215,7 +225,7 @@ export default function ReportIssuePage() {
     } finally {
       setSubmitting(false)
     }
-  }, [finalLat, finalLng, text, audioBlob, imageFile, phone, locationSource])
+  }, [finalLat, finalLng, text, audioBlob, imageFile, phone, locationSource, gpsLat, gpsLng, addressQuery])
 
   const mapCenter = (finalLat && finalLng) ? [finalLat, finalLng] : [18.52, 73.86]
 
@@ -286,40 +296,87 @@ export default function ReportIssuePage() {
               <div>
                 <label className="text-xs text-charcoal-600 uppercase tracking-wider font-bold flex items-center gap-1.5">
                   <MapPin className="w-3.5 h-3.5 text-civic-600" />
-                  Where is the problem located?
+                  Exact Problem Location
                   <span className="text-coral-600">*</span>
                 </label>
                 <p className="text-charcoal-500 text-xs mt-0.5">
-                  Pinpoint where the issue actually is on the ground (e.g. at the pothole or leak, not your home).
+                  Mark where the defect actually is on the ground so officers dispatch to the right site and duplicate reports merge.
                 </p>
               </div>
 
               {/* Status Indicator */}
               <div className="text-xs flex items-center gap-1.5 self-start sm:self-auto">
-                {locationSource === 'manual' ? (
+                {reportingMode === 'elsewhere' || locationSource === 'manual' ? (
                   <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-amber-600" /> Pin placed manually
+                    <MapPin className="w-3 h-3 text-amber-600" /> Problem Site (Elsewhere)
                   </span>
                 ) : (
                   <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-civic-50 text-civic-800 border border-civic-200 flex items-center gap-1">
-                    <Navigation className="w-3 h-3 text-civic-600" /> Pre-filled from Live GPS
+                    <Navigation className="w-3 h-3 text-civic-600" /> At Incident Site (GPS)
                   </span>
                 )}
               </div>
             </div>
 
-            {/* Hint for reporting from elsewhere */}
-            <div className="bg-civic-50/60 border border-civic-200 rounded-xl p-3 text-xs text-civic-900 flex items-start gap-2.5">
-              <span className="text-sm flex-shrink-0">💡</span>
-              <span className="leading-relaxed">
-                <strong className="font-semibold text-civic-950">Reporting from somewhere else?</strong> Drag the pin on the map or search an address below to place the pin directly at the incident.
-              </span>
+            {/* Reporting Mode Selector: At site vs elsewhere */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-ivory-100/80 rounded-xl border border-ivory-200">
+              <button
+                type="button"
+                onClick={() => {
+                  setReportingMode('at_site')
+                  if (gpsLat && gpsLng) {
+                    setPinLat(gpsLat)
+                    setPinLng(gpsLng)
+                  }
+                  setLocationSource('gps')
+                }}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                  reportingMode === 'at_site'
+                    ? 'bg-white text-civic-800 shadow-sm border border-civic-200'
+                    : 'text-charcoal-500 hover:text-charcoal-800'
+                }`}
+              >
+                <Navigation className="w-3.5 h-3.5 text-civic-600" />
+                I am at the problem site
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setReportingMode('elsewhere')
+                  setLocationSource('manual')
+                }}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                  reportingMode === 'elsewhere'
+                    ? 'bg-white text-coral-800 shadow-sm border border-coral-200'
+                    : 'text-charcoal-500 hover:text-charcoal-800'
+                }`}
+              >
+                <MapPin className="w-3.5 h-3.5 text-coral-600" />
+                Reporting from elsewhere (home/office)
+              </button>
             </div>
+
+            {/* Adaptive guidance based on reporting mode */}
+            {reportingMode === 'elsewhere' ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 flex items-start gap-2.5">
+                <span className="text-sm flex-shrink-0">📍</span>
+                <span className="leading-relaxed">
+                  <strong className="font-semibold text-amber-950">Reporting from home or another place?</strong> Search the landmark or street below (e.g. <em>"Akurdi Railway Station"</em> or <em>"FC Road"</em>) or drag the map pin to where the problem physically exists.
+                </span>
+              </div>
+            ) : (
+              <div className="bg-civic-50/60 border border-civic-200 rounded-xl p-3 text-xs text-civic-900 flex items-start gap-2.5">
+                <span className="text-sm flex-shrink-0">📍</span>
+                <span className="leading-relaxed">
+                  Using your current device coordinates for the problem site. If the issue is slightly further down the street, drag the pin or search the exact landmark.
+                </span>
+              </div>
+            )}
 
             {/* Optional GPS reading badge for transparency */}
             {gpsLat && gpsLng && !gpsError && (
               <div className="flex items-center justify-between text-xs text-charcoal-500 px-1">
-                <span>Phone GPS: {gpsLat.toFixed(5)}, {gpsLng.toFixed(5)}</span>
+                <span>Citizen device location: {gpsLat.toFixed(5)}, {gpsLng.toFixed(5)}</span>
                 {accuracy && <span>Accuracy: ±{Math.round(accuracy)}m</span>}
               </div>
             )}

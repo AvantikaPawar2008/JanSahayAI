@@ -1,7 +1,7 @@
 """Pydantic request/response models — grouped by feature with section comments."""
 
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
@@ -116,6 +116,7 @@ class TicketResponse(BaseModel):
     needs_admin_review: Optional[bool] = False
     department_reassigned_by: Optional[str] = None
     department_reassigned_at: Optional[str] = None
+    verification_photos: Optional[List[Dict[str, Any]]] = None
 
 
 class DepartmentReassignRequest(BaseModel):

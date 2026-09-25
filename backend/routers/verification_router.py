@@ -164,15 +164,31 @@ async def citizen_verify_resolution(request: CitizenResponseRequest):
 
     if request.response.lower() == "verified":
         from datetime import datetime, timezone
-        supabase.table("master_tickets").update({
+        update_data = {
             "status": "RESOLVED",
             "resolved_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", request.master_ticket_id).execute()
+        }
+        try:
+            supabase.table("master_tickets").update(update_data).eq("id", request.master_ticket_id).execute()
+        except Exception as e:
+            if "resolved_at" in str(e):
+                update_data.pop("resolved_at", None)
+                supabase.table("master_tickets").update(update_data).eq("id", request.master_ticket_id).execute()
+            else:
+                raise e
 
         return {"status": "RESOLVED", "message": "Thank you for confirming the resolution!"}
     else:
-        supabase.table("master_tickets").update({
+        update_data = {
             "status": "REOPENED",
-        }).eq("id", request.master_ticket_id).execute()
+            "needs_admin_review": True,
+        }
+        supabase.table("master_tickets").update(update_data).eq("id", request.master_ticket_id).execute()
+
+        from backend.services.priority_service import update_ticket_priority
+        try:
+            update_ticket_priority(request.master_ticket_id)
+        except Exception:
+            pass
 
         return {"status": "REOPENED", "message": "Ticket has been reopened. An officer will be reassigned."}

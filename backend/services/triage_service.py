@@ -1,21 +1,23 @@
-"""Calls Groq LLM to classify complaints into department, urgency, sub_category, and generate field SOPs."""
+"""Calls Laya for typed classification (department, urgency) and Groq LLM for SOP/SMS generation."""
 
 import json
+import logging
 from backend.utils.groq_client import get_groq_client
-from backend.utils.prompts import TRIAGE_PROMPT
+from backend.utils.prompts import TRIAGE_SOP_PROMPT
 from backend.config import get_settings
 from backend.models.schemas import TriageResult
+from backend.services.laya_service import (
+    classify_department,
+    score_urgency,
+    LAYA_LOW_CONFIDENCE_REVIEW_THRESHOLD,
+    DEPARTMENTS,
+)
 
+logger = logging.getLogger("civicpulse.triage")
 
-ALLOWED_DEPARTMENTS = {
-    "Water Supply & Sewerage",
-    "Roads & Infrastructure",
-    "Solid Waste Management",
-    "Electrical & Streetlighting",
-    "Health & Sanitation",
-}
+ALLOWED_DEPARTMENTS = set(DEPARTMENTS)
 
-# Fallback sub_category mappings for rule-based triage (when LLM unavailable)
+# Fallback sub_category mappings for defect identification
 _KEYWORD_SUBCATEGORY = {
     "pothole": "pothole",
     "road": "road_damage",
@@ -45,7 +47,13 @@ _KEYWORD_SUBCATEGORY = {
 
 async def triage_complaint(complaint_text: str, lat: float, lng: float) -> TriageResult:
     """
-    Sends complaint text to Groq LLM for classification and SOP generation.
+    Two-stage triage pipeline:
+      1. Laya Typed-Decision Model (local, ~33ms):
+         - Choice: classifies municipal department with calibrated probability
+         - Score: rates urgency on ordinal scale (LOW, MEDIUM, HIGH, CRITICAL)
+         - Low confidence (< 0.55) flags needs_admin_review = True
+      2. Groq LLM:
+         - Generates ONLY field SOP steps, equipment tools required, and citizen SMS draft.
 
     Args:
         complaint_text: The citizen's complaint (transcribed/translated if from audio)
@@ -53,9 +61,8 @@ async def triage_complaint(complaint_text: str, lat: float, lng: float) -> Triag
         lng: Longitude of the complaint location
 
     Returns:
-        TriageResult with department, urgency, sub_category, sop_steps, tools, citizen_sms
+        TriageResult with department, urgency, category, sub_category, sop_steps, tools, citizen_sms, needs_admin_review
     """
-    client = get_groq_client()
     settings = get_settings()
 
     # Defensive sanitization to prevent delimiter breakout
@@ -65,13 +72,71 @@ async def triage_complaint(complaint_text: str, lat: float, lng: float) -> Triag
         .strip()
     )
 
-    prompt = TRIAGE_PROMPT.format(
+    # ------------------------------------------------------------------
+    # Step 1: Laya Typed Decisions for Department and Urgency
+    # ------------------------------------------------------------------
+    try:
+        dept_result = classify_department(sanitized_text)
+        dept = dept_result["department"]
+        dept_confidence = dept_result["confidence"]
+    except Exception as e:
+        logger.error(f"Laya department classification failed ({e}); using fallback.")
+        dept = "Roads & Infrastructure"
+        dept_confidence = 0.0
+
+    try:
+        urgency_result = score_urgency(sanitized_text)
+        urg = urgency_result["urgency"]
+    except Exception as e:
+        logger.error(f"Laya urgency scoring failed ({e}); using fallback.")
+        urg = "MEDIUM"
+
+    # Admin review flag triggered by Laya confidence or department validation
+    needs_admin_review = False
+    review_threshold = getattr(settings, "laya_low_confidence_review_threshold", LAYA_LOW_CONFIDENCE_REVIEW_THRESHOLD)
+    if dept_confidence < review_threshold:
+        needs_admin_review = True
+        logger.info(f"Laya department confidence ({dept_confidence:.4f}) below threshold ({review_threshold}). Flagged for admin review.")
+
+    if dept not in ALLOWED_DEPARTMENTS:
+        final_dept = "Roads & Infrastructure"
+        needs_admin_review = True
+    else:
+        final_dept = dept
+
+    # Determine sub_category and category from keywords
+    lower_text = sanitized_text.lower()
+    sub_cat = "general_issue"
+    for kw, sc in _KEYWORD_SUBCATEGORY.items():
+        if kw in lower_text:
+            sub_cat = sc
+            break
+
+    cat = sub_cat.replace("_", " ").title() if sub_cat != "general_issue" else "General Civic Issue"
+
+    # ------------------------------------------------------------------
+    # Step 2: Groq Generates ONLY SOP Steps, Tools Required & SMS Draft
+    # ------------------------------------------------------------------
+    sop_steps = [
+        "Deploy field response team to reported coordinates",
+        "Conduct on-site safety hazard assessment and cordon off",
+        "Execute structural repair and capture post-resolution verification proof",
+    ]
+    tools_required = ["Safety Barricades", "Inspection Camera", "Repair Materials"]
+    citizen_sms_draft = (
+        f"Municipal update: Your {cat} complaint at this location has been "
+        f"assigned to {final_dept}. Response team dispatched."
+    )
+
+    client = get_groq_client()
+    prompt = TRIAGE_SOP_PROMPT.format(
+        department=final_dept,
+        urgency=urg,
         complaint_text=sanitized_text,
         lat=lat,
         lng=lng,
     )
 
-    parsed = None
     try:
         response = client.chat.completions.create(
             model=settings.groq_text_model,
@@ -79,17 +144,11 @@ async def triage_complaint(complaint_text: str, lat: float, lng: float) -> Triag
                 {
                     "role": "system",
                     "content": (
-                        "You are a municipal complaint triage AI. "
+                        "You are a municipal complaint field response coordinator. "
                         "Respond ONLY with valid JSON with these exact keys: "
-                        "department, urgency, category, sub_category, "
                         "sop_steps (array of 3 strings), "
                         "tools_required (array of strings), "
-                        "citizen_sms_draft (string). "
-                        "sub_category MUST be a lowercase snake_case identifier "
-                        "such as: pothole, road_collapse, footpath_damage, water_leak, "
-                        "no_water_supply, sewage_overflow, blocked_drain, garbage_dump, "
-                        "overflowing_bin, uncollected_waste, streetlight_outage, "
-                        "exposed_wire, power_line_down, open_manhole, dirty_public_toilet."
+                        "citizen_sms_draft (string)."
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -100,74 +159,22 @@ async def triage_complaint(complaint_text: str, lat: float, lng: float) -> Triag
         )
         raw_content = response.choices[0].message.content
         parsed = json.loads(raw_content)
+        if parsed.get("sop_steps") and isinstance(parsed["sop_steps"], list):
+            sop_steps = parsed["sop_steps"]
+        if parsed.get("tools_required") and isinstance(parsed["tools_required"], list):
+            tools_required = parsed["tools_required"]
+        if parsed.get("citizen_sms_draft") and isinstance(parsed["citizen_sms_draft"], str):
+            citizen_sms_draft = parsed["citizen_sms_draft"]
     except Exception as e:
-        # Fallback to rule-based classification if Groq call fails
-        lower_text = complaint_text.lower()
-
-        # Determine sub_category from keywords
-        sub_cat = "general_issue"
-        for kw, sc in _KEYWORD_SUBCATEGORY.items():
-            if kw in lower_text:
-                sub_cat = sc
-                break
-
-        if any(w in lower_text for w in ["pothole", "road", "tar", "asphalt", "footpath", "collapse"]):
-            dept = "Roads & Infrastructure"
-            cat = "Pothole / Road Damage"
-            urg = "HIGH" if any(w in lower_text for w in ["deep", "accident", "dangerous", "collapse"]) else "MEDIUM"
-        elif any(w in lower_text for w in ["water", "leak", "pipe", "drainage", "sewage"]):
-            dept = "Water Supply & Sewerage"
-            cat = "Water Leakage"
-            urg = "HIGH"
-        elif any(w in lower_text for w in ["garbage", "trash", "waste", "dump", "bin"]):
-            dept = "Solid Waste Management"
-            cat = "Garbage Accumulation"
-            urg = "MEDIUM"
-        elif any(w in lower_text for w in ["light", "dark", "wire", "pole", "electricity"]):
-            dept = "Electrical & Streetlighting"
-            cat = "Streetlight Failure"
-            urg = "HIGH" if "wire" in lower_text else "MEDIUM"
-        else:
-            dept = "Roads & Infrastructure"
-            cat = "General Civic Issue"
-            urg = "MEDIUM"
-
-        parsed = {
-            "department": dept,
-            "urgency": urg,
-            "category": cat,
-            "sub_category": sub_cat,
-            "sop_steps": [
-                "Deploy field response team to reported coordinates",
-                "Conduct on-site safety hazard assessment and cordon off",
-                "Execute structural repair and capture post-resolution verification proof",
-            ],
-            "tools_required": ["Safety Barricades", "Inspection Camera", "Repair Materials"],
-            "citizen_sms_draft": (
-                f"Municipal update: Your {cat} complaint at this location has been "
-                f"assigned to {dept}. Response team dispatched."
-            ),
-        }
-
-    raw_dept = (parsed.get("department") or "").strip()
-    needs_admin_review = False
-
-    if raw_dept in ALLOWED_DEPARTMENTS:
-        final_dept = raw_dept
-    else:
-        final_dept = "Roads & Infrastructure"
-        needs_admin_review = True
-
-    # Normalize sub_category to lowercase snake_case; default to empty string if absent
-    raw_sub_cat = (parsed.get("sub_category") or "").strip().lower().replace(" ", "_")
+        logger.warning(f"Groq SOP generation fallback engaged: {e}")
 
     return TriageResult(
         department=final_dept,
-        urgency=parsed.get("urgency", "MEDIUM"),
-        category=parsed.get("category", "General Complaint"),
-        sub_category=raw_sub_cat or None,
-        sop_steps=parsed.get("sop_steps", []),
-        tools_required=parsed.get("tools_required", []),
-        citizen_sms_draft=parsed.get("citizen_sms_draft", ""),
+        urgency=urg,
+        category=cat,
+        sub_category=sub_cat,
+        sop_steps=sop_steps,
+        tools_required=tools_required,
+        citizen_sms_draft=citizen_sms_draft,
         needs_admin_review=needs_admin_review,
     )

@@ -22,6 +22,7 @@ from backend.routers import (
     whatsapp_webhook,
 )
 from backend.services.embedding_service import preload_model
+from backend.services.laya_service import get_model as preload_laya
 
 # Configure logging
 logging.basicConfig(
@@ -33,11 +34,14 @@ logger = logging.getLogger("jansahayai")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup/shutdown events — preload ML model on startup."""
+    """Startup/shutdown events — preload ML models on startup."""
     logger.info("🚀 JanSahayAI starting up...")
     logger.info("📦 Loading sentence-transformers model (first time may download ~80MB)...")
     preload_model()
     logger.info("✅ Embedding model loaded and ready")
+    logger.info("📦 Loading Laya typed-decision model (multilingual checkpoint, ~33ms)...")
+    preload_laya()
+    logger.info("✅ Laya model loaded and ready for zero-latency typed decisions")
     yield
     logger.info("🛑 JanSahayAI shutting down...")
 

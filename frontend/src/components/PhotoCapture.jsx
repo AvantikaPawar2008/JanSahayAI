@@ -13,9 +13,61 @@ export default function PhotoCapture({ onCapture, label = 'Take Photo', disabled
 
   const handleCapture = (e) => {
     const file = e.target.files?.[0]
-    if (file) {
-      setFileName(file.name)
-      setPreview(URL.createObjectURL(file))
+    if (!file) return
+
+    // Quick preview
+    setFileName(file.name)
+    setPreview(URL.createObjectURL(file))
+
+    // Client-side canvas compression to reduce 10MB+ phone photos to ~250KB
+    try {
+      const reader = new FileReader()
+      reader.onload = (event) => {
+        const img = new Image()
+        img.onload = () => {
+          const maxDim = 1600
+          let width = img.width
+          let height = img.height
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width)
+              width = maxDim
+            } else {
+              width = Math.round((width * maxDim) / height)
+              height = maxDim
+            }
+          }
+
+          const canvas = document.createElement('canvas')
+          canvas.width = width
+          canvas.height = height
+          const ctx = canvas.getContext('2d')
+          ctx.drawImage(img, 0, 0, width, height)
+
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                const optimizedFile = new File(
+                  [blob],
+                  file.name.replace(/\.[^/.]+$/, '') + '.jpg',
+                  { type: 'image/jpeg', lastModified: Date.now() }
+                )
+                onCapture?.(optimizedFile)
+              } else {
+                onCapture?.(file)
+              }
+            },
+            'image/jpeg',
+            0.85
+          )
+        }
+        img.onerror = () => onCapture?.(file)
+        img.src = event.target.result
+      }
+      reader.onerror = () => onCapture?.(file)
+      reader.readAsDataURL(file)
+    } catch {
       onCapture?.(file)
     }
   }
@@ -78,12 +130,11 @@ export default function PhotoCapture({ onCapture, label = 'Take Photo', disabled
         </button>
       )}
 
-      {/* Hidden file input — capture="environment" forces rear camera, accept restricts to images */}
+      {/* Hidden file input — allows image selection & camera across desktop and mobile */}
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
-        capture="environment"
+        accept="image/*,image/jpeg,image/png,image/webp"
         onChange={handleCapture}
         className="hidden"
       />
