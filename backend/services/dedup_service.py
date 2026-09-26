@@ -347,3 +347,141 @@ async def get_ticket_upvote_count(master_ticket_id: str) -> int:
 async def increment_upvote(master_ticket_id: str) -> int:
     """Deprecated: Upvote count is now automatically maintained by database trigger on ticket_reports."""
     return await get_ticket_upvote_count(master_ticket_id)
+
+
+# ============================================================
+# BEFORE-PHOTO AUTO-ASSIGNMENT — Section 3
+# ============================================================
+
+def assign_or_update_before_photo(master_ticket_id: str, new_report: dict) -> None:
+    """
+    Decides whether the image on a newly-linked citizen report should become (or replace)
+    the master ticket's 'before' verification photo.
+
+    Rules:
+      1. If no image on the report → nothing to do.
+      2. If no 'before' photo exists yet → auto-create one from this report.
+      3. If a 'before' photo already exists → only replace it if this report's sharpness
+         score is strictly higher than the existing photo's source report score
+         (sharper image wins, ties go to the existing photo).
+
+    Sets master_tickets.has_before_photo = True when a before photo is first created.
+
+    Args:
+        master_ticket_id: UUID string of the master ticket.
+        new_report: dict that MUST contain at minimum:
+            - id (str): UUID of the ticket_report row
+            - image_url (str | None): storage URL of the image
+            - image_sharpness_score (float | None): Laplacian variance computed at upload
+            - lat (float | None)
+            - lng (float | None)
+    """
+    supabase = get_supabase_client()
+
+    image_url = new_report.get("image_url")
+    if not image_url:
+        return  # No image on this report — nothing to do
+
+    new_score = float(new_report.get("image_sharpness_score") or 0.0)
+    new_report_id = new_report.get("id")
+    new_lat = new_report.get("lat")
+    new_lng = new_report.get("lng")
+
+    # Check for an existing 'before' photo for this ticket
+    try:
+        existing_res = (
+            supabase.table("verification_photos")
+            .select("id, source_report_id, image_url")
+            .eq("master_ticket_id", master_ticket_id)
+            .eq("photo_type", "before")
+            .order("captured_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        existing_before = existing_res.data[0] if existing_res.data else None
+    except Exception as exc:
+        logger.warning(f"assign_or_update_before_photo: failed to fetch existing before photo: {exc}")
+        return
+
+    if existing_before is None:
+        # ---- First image for this ticket — auto-create 'before' photo ----
+        photo_data = {
+            "master_ticket_id": master_ticket_id,
+            "photo_type": "before",
+            "image_url": image_url,
+            "verification_method": "before_after_comparison",  # default; updated at verification time
+        }
+        if new_lat is not None:
+            photo_data["lat"] = new_lat
+        if new_lng is not None:
+            photo_data["lng"] = new_lng
+        if new_report_id:
+            photo_data["source_report_id"] = new_report_id
+
+        try:
+            supabase.table("verification_photos").insert(photo_data).execute()
+            supabase.table("master_tickets").update(
+                {"has_before_photo": True}
+            ).eq("id", master_ticket_id).execute()
+            logger.info(
+                f"Before photo auto-created for ticket {master_ticket_id} "
+                f"(report={new_report_id}, sharpness={new_score:.2f})"
+            )
+        except Exception as exc:
+            logger.error(
+                f"assign_or_update_before_photo: failed to create before photo for ticket "
+                f"{master_ticket_id}: {exc}"
+            )
+        return
+
+    # ---- A before photo already exists — compare sharpness ----
+    existing_source_report_id = existing_before.get("source_report_id")
+    existing_score = 0.0
+
+    if existing_source_report_id:
+        try:
+            source_res = (
+                supabase.table("ticket_reports")
+                .select("image_sharpness_score")
+                .eq("id", existing_source_report_id)
+                .single()
+                .execute()
+            )
+            existing_score = float(
+                (source_res.data or {}).get("image_sharpness_score") or 0.0
+            )
+        except Exception as exc:
+            logger.warning(
+                f"assign_or_update_before_photo: could not fetch sharpness for source report "
+                f"{existing_source_report_id}: {exc}"
+            )
+
+    if new_score > existing_score:
+        # New photo is sharper — replace the existing before photo
+        update_data = {"image_url": image_url}
+        if new_lat is not None:
+            update_data["lat"] = new_lat
+        if new_lng is not None:
+            update_data["lng"] = new_lng
+        if new_report_id:
+            update_data["source_report_id"] = new_report_id
+
+        try:
+            supabase.table("verification_photos").update(update_data).eq(
+                "id", existing_before["id"]
+            ).execute()
+            logger.info(
+                f"Before photo replaced for ticket {master_ticket_id} "
+                f"(new sharpness={new_score:.2f} > old={existing_score:.2f}, "
+                f"report={new_report_id})"
+            )
+        except Exception as exc:
+            logger.error(
+                f"assign_or_update_before_photo: failed to update before photo "
+                f"{existing_before['id']}: {exc}"
+            )
+    else:
+        logger.debug(
+            f"Before photo NOT replaced for ticket {master_ticket_id} "
+            f"(new sharpness={new_score:.2f} <= existing={existing_score:.2f})"
+        )

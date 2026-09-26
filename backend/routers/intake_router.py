@@ -14,14 +14,19 @@ Pipeline (revised):
 
 import uuid
 import logging
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Header
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Header, BackgroundTasks
 from typing import Optional
+import asyncio
 
 from backend.services.transcription_service import transcribe_audio
 from backend.services.embedding_service import get_embedding
-from backend.services.dedup_service import find_duplicate
-from backend.services.triage_service import triage_complaint
-from backend.services.vision_service import analyze_complaint_photo
+from backend.services.dedup_service import find_duplicate, assign_or_update_before_photo
+from backend.services.triage_service import (
+    triage_complaint,
+    fast_triage_classification,
+    async_enrich_master_ticket_sop,
+)
+from backend.services.vision_service import analyze_complaint_photo, compute_sharpness_score
 from backend.services.notification_service import send_citizen_notification
 from backend.services.priority_service import compute_priority_components, update_ticket_priority
 from backend.services.geo_service import reverse_geocode, resolve_incident_location
@@ -35,6 +40,7 @@ router = APIRouter(prefix="/api/intake", tags=["Intake"])
 
 @router.post("", response_model=IntakeResponse)
 async def submit_complaint(
+    background_tasks: BackgroundTasks,
     lat: float = Form(...),
     lng: float = Form(...),
     citizen_phone: str = Form(default=""),
@@ -60,6 +66,8 @@ async def submit_complaint(
     transcript = None
     translated_text = None
     image_url = None
+    image_sharpness_score = None
+    image_bytes_for_sharpness = None  # Hold reference for sharpness computation
 
     # ----------------------------------------------------------------
     # Step 1: Transcribe audio if provided
@@ -83,27 +91,32 @@ async def submit_complaint(
                 # Continue without transcription — text or photo might still work
 
     # ----------------------------------------------------------------
-    # Step 2: Upload image to Supabase Storage if provided
+    # Step 2: Upload image to Supabase Storage concurrently if provided
     # ----------------------------------------------------------------
+    image_upload_task = None
     if image_file:
         image_bytes = await image_file.read()
         if image_bytes:
-            try:
-                from backend.services.storage_service import upload_image_bytes
-                file_ext = (image_file.filename or "photo.jpg").split(".")[-1]
-                storage_path = f"complaints/{uuid.uuid4()}.{file_ext}"
-                image_url = upload_image_bytes(
-                    supabase=supabase,
-                    image_bytes=image_bytes,
-                    storage_path=storage_path,
-                    content_type=image_file.content_type or "image/jpeg",
-                )
-            except Exception as e:
-                logger.error(f"Image upload failed: {e}")
+            # Compute sharpness BEFORE upload so we have the bytes in-memory
+            image_sharpness_score = compute_sharpness_score(image_bytes)
+            logger.debug(f"Image sharpness score: {image_sharpness_score:.2f}")
+            image_bytes_for_sharpness = image_bytes  # kept for reference; not re-read
+            file_ext = (image_file.filename or "photo.jpg").split(".")[-1]
+            storage_path = f"complaints/{uuid.uuid4()}.{file_ext}"
+            from backend.services.storage_service import upload_image_bytes
+            image_upload_task = asyncio.to_thread(
+                upload_image_bytes,
+                supabase=supabase,
+                image_bytes=image_bytes,
+                storage_path=storage_path,
+                content_type=image_file.content_type or "image/jpeg",
+            )
 
-    # Step 2b: If image provided but no text, use vision model to describe the photo
-    if image_url and not complaint_text:
+    # Step 2b: If image provided but no text, we must await upload now to describe photo
+    if image_upload_task and not complaint_text:
         try:
+            image_url = await image_upload_task
+            image_upload_task = None
             vision_result = await analyze_complaint_photo(image_url)
             complaint_text = vision_result.get("description", "Civic issue reported via photo")
         except Exception as e:
@@ -118,10 +131,9 @@ async def submit_complaint(
         )
 
     # ----------------------------------------------------------------
-    # Step 2c: Resolve REAL exact problem location vs device logging position
-    # (Citizen can report an issue from home/office or commute)
+    # Step 2c, 3, 4: Parallelize Location Resolution, Embedding, and Fast Triage
     # ----------------------------------------------------------------
-    loc_resolution = await resolve_incident_location(
+    loc_task = resolve_incident_location(
         complaint_text=complaint_text,
         client_lat=lat,
         client_lng=lng,
@@ -130,21 +142,20 @@ async def submit_complaint(
         explicit_problem_lng=problem_lng,
         explicit_landmark=problem_landmark,
     )
+    embed_task = asyncio.to_thread(get_embedding, complaint_text)
+    fast_triage_task = asyncio.to_thread(fast_triage_classification, complaint_text)
+
+    loc_resolution, text_embedding, triage_result = await asyncio.gather(
+        loc_task,
+        embed_task,
+        fast_triage_task,
+    )
+
     real_lat = loc_resolution["real_lat"]
     real_lng = loc_resolution["real_lng"]
     final_location_source = loc_resolution["location_source"]
     logging_lat = device_lat if device_lat is not None else lat
     logging_lng = device_lng if device_lng is not None else lng
-
-    # ----------------------------------------------------------------
-    # Step 3: Generate text embedding
-    # ----------------------------------------------------------------
-    text_embedding = get_embedding(complaint_text)
-
-    # ----------------------------------------------------------------
-    # Step 4: Triage FIRST using the REAL problem coordinates
-    # ----------------------------------------------------------------
-    triage_result = await triage_complaint(complaint_text, real_lat, real_lng)
 
     # Look up or create citizen record for tracking and citizen history (RLS compatibility)
     citizen_id = None
@@ -202,6 +213,15 @@ async def submit_complaint(
         # ---- DUPLICATE PATH: link to existing master ticket ----
         master_ticket_id = duplicate["id"]
 
+        # Await async image upload if pending
+        if image_upload_task:
+            try:
+                image_url = await image_upload_task
+                image_upload_task = None
+            except Exception as e:
+                logger.error(f"Image upload failed: {e}")
+                image_url = None
+
         # Sybil defense: Check if this citizen has already reported/upvoted this specific ticket
         already_reported = False
         if citizen_id:
@@ -251,14 +271,29 @@ async def submit_complaint(
             "lat": logging_lat,
             "lng": logging_lng,
             **({"citizen_id": citizen_id} if citizen_id else {}),
+            **({"image_sharpness_score": image_sharpness_score} if image_sharpness_score is not None else {}),
         }
         # Graceful: include location_source only if column exists
+        inserted_report = None
         try:
-            supabase.table("ticket_reports").insert(
+            res = supabase.table("ticket_reports").insert(
                 {**report_data, "location_source": final_location_source}
             ).execute()
+            inserted_report = res.data[0] if res.data else None
         except Exception:
-            supabase.table("ticket_reports").insert(report_data).execute()
+            res = supabase.table("ticket_reports").insert(report_data).execute()
+            inserted_report = res.data[0] if res.data else None
+
+        # Before-photo auto-assignment: decide if this report's image should become
+        # (or upgrade) the master ticket's before-photo based on sharpness.
+        if inserted_report and image_url:
+            try:
+                assign_or_update_before_photo(
+                    master_ticket_id=master_ticket_id,
+                    new_report=inserted_report,
+                )
+            except Exception as bpe:
+                logger.warning(f"Before-photo assignment failed for ticket {master_ticket_id}: {bpe}")
 
         # Read trigger-derived upvote count from master_tickets
         try:
@@ -292,12 +327,32 @@ async def submit_complaint(
             upvote_count=new_upvote_count,
         )
 
+    # Await async image upload if pending
+    if image_upload_task:
+        try:
+            image_url = await image_upload_task
+            image_upload_task = None
+        except Exception as e:
+            logger.error(f"Image upload failed: {e}")
+            image_url = None
+
     # ---- NEW TICKET PATH ----
     # Calculate initial priority components
     init_priority = compute_priority_components(
         created_at=datetime.now(timezone.utc),
         urgency=triage_result.urgency,
         duplicate_count=1,
+    )
+
+    default_sop_steps = [
+        "Deploy field response team to reported coordinates",
+        "Conduct on-site safety hazard assessment and cordon off",
+        "Execute structural repair and capture post-resolution verification proof",
+    ]
+    default_tools = ["Safety Barricades", "Inspection Camera", "Repair Materials"]
+    default_sms = (
+        f"Municipal update: Your {triage_result.category} complaint at this location has been "
+        f"assigned to {triage_result.department}. Response team dispatched."
     )
 
     # Step 6: Create master ticket at the REAL EXACT problem location
@@ -308,9 +363,9 @@ async def submit_complaint(
         "status": "OPEN",
         "lat": real_lat,
         "lng": real_lng,
-        "sop_steps": triage_result.sop_steps,
-        "tools_required": triage_result.tools_required,
-        "citizen_sms_draft": triage_result.citizen_sms_draft,
+        "sop_steps": default_sop_steps,
+        "tools_required": default_tools,
+        "citizen_sms_draft": default_sms,
         "description": complaint_text,
         "upvote_count": 1,
         "priority_score": init_priority["priority_score"],
@@ -344,6 +399,18 @@ async def submit_complaint(
     master_ticket = ticket_result.data[0]
     master_ticket_id = master_ticket["id"]
 
+    # Dispatch non-blocking background SOP generation
+    background_tasks.add_task(
+        async_enrich_master_ticket_sop,
+        master_ticket_id=master_ticket_id,
+        complaint_text=complaint_text,
+        department=triage_result.department,
+        urgency=triage_result.urgency,
+        category=triage_result.category,
+        lat=real_lat,
+        lng=real_lng,
+    )
+
     # Step 6b: Reverse geocode once for human-readable address on novel tickets
     address_str = loc_resolution.get("resolved_address") or f"{real_lat:.5f}, {real_lng:.5f}"
     if not loc_resolution.get("resolved_address"):
@@ -368,20 +435,36 @@ async def submit_complaint(
         "lat": logging_lat,
         "lng": logging_lng,
         **({"citizen_id": citizen_id} if citizen_id else {}),
+        **({"image_sharpness_score": image_sharpness_score} if image_sharpness_score is not None else {}),
     }
     # Graceful: include location_source only if column exists
+    inserted_report = None
     try:
-        supabase.table("ticket_reports").insert(
+        res = supabase.table("ticket_reports").insert(
             {**report_data, "location_source": final_location_source}
         ).execute()
+        inserted_report = res.data[0] if res.data else None
     except Exception:
-        supabase.table("ticket_reports").insert(report_data).execute()
+        res = supabase.table("ticket_reports").insert(report_data).execute()
+        inserted_report = res.data[0] if res.data else None
 
-    # Step 8: Send citizen notification
+    # Step 7b: Before-photo auto-assignment — first citizen image on a new ticket
+    # automatically becomes the 'before' photo so officers always have context.
+    if inserted_report and image_url:
+        try:
+            assign_or_update_before_photo(
+                master_ticket_id=master_ticket_id,
+                new_report=inserted_report,
+            )
+        except Exception as bpe:
+            logger.warning(f"Before-photo assignment failed for new ticket {master_ticket_id}: {bpe}")
+
+    # Step 8: Send citizen notification asynchronously in background
     if citizen_phone:
-        await send_citizen_notification(
+        background_tasks.add_task(
+            send_citizen_notification,
             citizen_phone,
-            triage_result.citizen_sms_draft,
+            default_sms,
             master_ticket_id,
         )
 
@@ -399,7 +482,7 @@ async def submit_complaint(
         sub_category=triage_result.sub_category,
         department=triage_result.department,
         urgency=triage_result.urgency,
-        message=triage_result.citizen_sms_draft,
+        message=default_sms,
         upvote_count=1,
         address_text=address_str,
     )

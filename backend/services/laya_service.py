@@ -191,6 +191,65 @@ def score_urgency(report_text: str) -> dict:
     }
 
 
+def classify_and_score_batch(report_text: str) -> dict:
+    """
+    Executes department choice and urgency scoring in a single batch forward pass.
+    Saves ~50% inference time by evaluating both typed questions together.
+    """
+    model = get_model()
+    try:
+        res = model.agent.predict(
+            report_text,
+            {
+                "dept": {
+                    "type": "choice",
+                    "instructions": "Which municipal department should handle this complaint?",
+                    "criteria": DEPARTMENTS,
+                },
+                "urgency": {
+                    "type": "score",
+                    "instructions": "How urgent is this civic issue, considering safety risk?",
+                    "criteria": URGENCY_LEVELS,
+                },
+            },
+        )
+        answers = res.get("answers", {})
+        dept_ans = answers.get("dept", {})
+        dept_choice = dept_ans.get("choice", DEPARTMENTS[0])
+        dept_probs = dept_ans.get("probabilities", {})
+        dept_top_prob = float(dept_probs.get(dept_choice, dept_ans.get("confidence", 0.0)))
+
+        urg_ans = answers.get("urgency", {})
+        urg_probs = urg_ans.get("probabilities", {})
+        if urg_probs:
+            best_idx_str = max(urg_probs.keys(), key=lambda k: urg_probs[k])
+            best_idx = int(best_idx_str)
+            urg_choice = URGENCY_LEVELS[best_idx] if best_idx < len(URGENCY_LEVELS) else URGENCY_LEVELS[0]
+            urg_top_prob = float(urg_probs[best_idx_str])
+        else:
+            urg_choice = URGENCY_LEVELS[1]  # "MEDIUM"
+            urg_top_prob = 0.0
+
+        return {
+            "department": dept_choice,
+            "department_confidence": dept_top_prob,
+            "department_distribution": dept_probs,
+            "urgency": urg_choice,
+            "urgency_confidence": urg_top_prob,
+        }
+    except Exception as e:
+        logger.warning(f"Batch Laya predict failed ({e}), falling back to individual calls.")
+        dept_res = classify_department(report_text)
+        urg_res = score_urgency(report_text)
+        return {
+            "department": dept_res["department"],
+            "department_confidence": dept_res["confidence"],
+            "department_distribution": dept_res.get("distribution", {}),
+            "urgency": urg_res["urgency"],
+            "urgency_confidence": urg_res["confidence"],
+        }
+
+
 def confirm_duplicate(new_report_text: str, candidate_ticket_text: str) -> dict:
     """
     Direct judgment for ambiguous-zone dedup candidates using Laya typed decisions.

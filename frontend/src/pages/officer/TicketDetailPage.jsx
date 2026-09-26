@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload, MapPin, RefreshCw } from 'lucide-react'
+import {
+  ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload, MapPin,
+  RefreshCw, RotateCcw, Camera, Info, ShieldCheck, ShieldX, Clock
+} from 'lucide-react'
 import SOPStepsList from '../../components/SOPStepsList'
 import PhotoCapture from '../../components/PhotoCapture'
 import GpsBadge from '../../components/GpsBadge'
@@ -11,8 +14,30 @@ import useAuth from '../../hooks/useAuth'
 import { API_BASE } from '../../supabaseClient'
 
 /**
- * TicketDetailPage — SOP view + before/after photo capture + GPS verification for officers.
+ * TicketDetailPage — SOP view + after-photo verification + officer UI state machine.
+ *
+ * Officer UI state machine (Section 5):
+ *
+ *   [Ticket loaded]
+ *       ↓ has after photo?
+ *   No  → Show "Upload After Photo" capture UI
+ *   Yes → Show "Run Verification" button
+ *       ↓ verify result?
+ *   FAILED → Show failure banner + "Upload New After Photo" retry only (no bypass path)
+ *   PASSED → Show "Awaiting Citizen Confirmation" read-only badge
+ *            + "Actually not fixed — reopen" officer self-correction (needs reason text)
+ *            NO button that can set RESOLVED or CLOSED.
+ *
+ * Note on before photos: before-photos are now auto-assigned from citizen reports
+ * (backend logic, Migration 009). Officers no longer need to manually upload a before photo.
+ * The UI still shows if a citizen before-photo is on file for context.
  */
+
+const VERIFICATION_METHOD_LABELS = {
+  before_after_comparison: 'Verified via before/after comparison',
+  single_photo_completion: 'Verified via single-photo check (no before-photo was on file for this ticket)',
+}
+
 export default function TicketDetailPage() {
   const { ticketId } = useParams()
   const navigate = useNavigate()
@@ -23,12 +48,19 @@ export default function TicketDetailPage() {
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(null)
   const [completedSteps, setCompletedSteps] = useState([])
-  const [beforePhoto, setBeforePhoto] = useState(null)
+
+  // After-photo capture & upload
   const [afterPhoto, setAfterPhoto] = useState(null)
   const [uploading, setUploading] = useState(false)
-  const [uploadResult, setUploadResult] = useState(null)
+
+  // Verification
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState(null)
+
+  // Officer self-correction reopen
+  const [reopenReason, setReopenReason] = useState('')
+  const [reopening, setReopening] = useState(false)
+  const [reopenError, setReopenError] = useState(null)
 
   const hasFetched = useRef(false)
 
@@ -37,15 +69,16 @@ export default function TicketDetailPage() {
     setFetchError(null)
     try {
       const headers = {}
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`
-      }
+      if (token) headers['Authorization'] = `Bearer ${token}`
       const response = await fetch(`${API_BASE}/api/officer/ticket/${ticketId}`, { headers })
-      if (!response.ok) {
-        throw new Error(`Failed to load ticket (${response.status})`)
-      }
+      if (!response.ok) throw new Error(`Failed to load ticket (${response.status})`)
       const result = await response.json()
       setData(result)
+      // Reset verification state when ticket data refreshes
+      // (if the ticket is back to IN_PROGRESS after a reopen, clear stale result)
+      if (result?.ticket?.status === 'IN_PROGRESS') {
+        setVerifyResult(null)
+      }
     } catch (err) {
       console.error('Ticket detail error:', err)
       setFetchError(err.message)
@@ -55,26 +88,25 @@ export default function TicketDetailPage() {
   }
 
   useEffect(() => {
-    // Fetch once as soon as session is available (or immediately if no session needed due to admin fallback)
     if (!hasFetched.current) {
       hasFetched.current = true
       fetchTicketDetail(session?.access_token)
     }
   }, [ticketId])
 
-  // If session resolves after initial render (e.g., slow token retrieval), re-fetch with auth
   useEffect(() => {
     if (session?.access_token && hasFetched.current && !data && !loading) {
       fetchTicketDetail(session.access_token)
     }
   }, [session?.access_token])
 
-  const uploadPhoto = async (photoFile, photoType) => {
+  /** Upload officer after photo to /api/officer/submit-proof */
+  const uploadAfterPhoto = async (photoFile) => {
     const uploadLat = lat || data?.ticket?.lat
     const uploadLng = lng || data?.ticket?.lng
 
     if (!uploadLat || !uploadLng) {
-      alert('GPS location is required for photo submission. Please ensure location services are enabled or the ticket has coordinates.')
+      alert('GPS location is required for photo submission. Please enable location services.')
       return
     }
 
@@ -82,15 +114,13 @@ export default function TicketDetailPage() {
     try {
       const formData = new FormData()
       formData.append('master_ticket_id', ticketId)
-      formData.append('photo_type', photoType)
+      formData.append('photo_type', 'after')
       formData.append('lat', uploadLat.toString())
       formData.append('lng', uploadLng.toString())
       formData.append('image_file', photoFile)
 
       const headers = {}
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`
-      }
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
       const response = await fetch(`${API_BASE}/api/officer/submit-proof`, {
         method: 'POST',
@@ -102,10 +132,8 @@ export default function TicketDetailPage() {
         const errJson = await response.json().catch(() => ({}))
         throw new Error(errJson.detail || `Server responded with ${response.status}`)
       }
-      const result = await response.json()
-      setUploadResult(result)
-      
-      // Refresh data
+
+      setAfterPhoto(null) // Clear file selection after upload
       await fetchTicketDetail(session?.access_token)
     } catch (err) {
       console.error('Upload error:', err)
@@ -115,13 +143,13 @@ export default function TicketDetailPage() {
     }
   }
 
+  /** Trigger VLM + geofence verification for the uploaded after photo */
   const runVerification = async () => {
     setVerifying(true)
+    setVerifyResult(null)
     try {
       const headers = { 'Content-Type': 'application/json' }
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`
-      }
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
 
       const response = await fetch(`${API_BASE}/api/verify/photo`, {
         method: 'POST',
@@ -131,15 +159,55 @@ export default function TicketDetailPage() {
 
       const result = await response.json()
       setVerifyResult(result)
-      
-      // Refresh data
       await fetchTicketDetail(session?.access_token)
     } catch (err) {
       console.error('Verification error:', err)
+      setVerifyResult({ overall_passed: false, notes: 'Verification request failed — please retry.' })
     } finally {
       setVerifying(false)
     }
   }
+
+  /** Officer self-correction: revert RESOLVED_PENDING_CITIZEN → IN_PROGRESS */
+  const submitOfficerReopen = async () => {
+    if (!reopenReason.trim()) {
+      setReopenError('Please provide a short reason before reverting.')
+      return
+    }
+    setReopening(true)
+    setReopenError(null)
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+
+      const response = await fetch(`${API_BASE}/api/verify/reopen-by-officer`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          master_ticket_id: ticketId,
+          reason: reopenReason.trim(),
+          officer_id: session?.user?.id || null,
+        }),
+      })
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}))
+        throw new Error(errJson.detail || `Server responded with ${response.status}`)
+      }
+
+      // Reset state and reload ticket
+      setVerifyResult(null)
+      setReopenReason('')
+      await fetchTicketDetail(session?.access_token)
+    } catch (err) {
+      console.error('Officer reopen error:', err)
+      setReopenError(err.message)
+    } finally {
+      setReopening(false)
+    }
+  }
+
+  // ─── Render: loading / error states ──────────────────────────────────────
 
   if (loading) {
     return (
@@ -162,14 +230,11 @@ export default function TicketDetailPage() {
             {fetchError || "The requested ticket could not be found or you don't have permission to view it."}
           </p>
           <div className="flex items-center justify-center gap-3 pt-2">
-            <button
-              onClick={() => navigate('/officer')}
-              className="btn btn-secondary text-xs"
-            >
+            <button onClick={() => navigate('/officer')} className="btn btn-secondary text-xs">
               Back to Queue
             </button>
             <button
-              onClick={fetchTicketDetail}
+              onClick={() => fetchTicketDetail(session?.access_token)}
               className="btn btn-primary text-xs flex items-center gap-1.5"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Retry
@@ -180,10 +245,29 @@ export default function TicketDetailPage() {
     )
   }
 
+  // ─── Derived state ────────────────────────────────────────────────────────
+
   const ticket = data.ticket
   const photos = data.verification_photos || []
-  const hasBeforePhoto = photos.some((p) => p.photo_type === 'before')
-  const hasAfterPhoto = photos.some((p) => p.photo_type === 'after')
+
+  // Before-photo: auto-assigned from citizen reports (Migration 009) or manually uploaded
+  const citizenBeforePhoto = photos.find((p) => p.photo_type === 'before')
+  const hasBeforePhoto = Boolean(citizenBeforePhoto) || Boolean(ticket.has_before_photo)
+
+  const afterPhotoRecord = photos.find((p) => p.photo_type === 'after')
+  const hasAfterPhoto = Boolean(afterPhotoRecord)
+
+  const isAwaitingCitizenConfirmation = ticket.status === 'RESOLVED_PENDING_CITIZEN'
+
+  // Read verification_method from the after-photo record or from last verify result
+  const effectiveVerifMethod =
+    verifyResult?.verification_method ||
+    afterPhotoRecord?.verification_method ||
+    (hasBeforePhoto ? 'before_after_comparison' : 'single_photo_completion')
+
+  const verifMethodLabel = VERIFICATION_METHOD_LABELS[effectiveVerifMethod] || effectiveVerifMethod
+
+  // ─── Main Render ──────────────────────────────────────────────────────────
 
   return (
     <div className="page-enter max-w-3xl mx-auto px-4 py-8">
@@ -195,20 +279,27 @@ export default function TicketDetailPage() {
         <ArrowLeft className="w-4 h-4" /> Back to Queue
       </button>
 
-      {/* Ticket Header */}
+      {/* ── Ticket Header ── */}
       <div className="glass-card mb-6">
         <div className="flex items-start justify-between mb-4">
           <div>
             <div className="flex flex-wrap items-center gap-2 mb-2">
               <UrgencyBadge urgency={ticket.urgency} size="md" />
               <span className={`badge ${
-                ticket.status === 'IN_PROGRESS' ? 'status-in_progress' : 'status-open'
+                ticket.status === 'IN_PROGRESS' ? 'status-in_progress' :
+                ticket.status === 'RESOLVED_PENDING_CITIZEN' ? 'status-resolved_pending_citizen' :
+                'status-open'
               }`}>
                 {ticket.status?.replace(/_/g, ' ')}
               </span>
+              {isAwaitingCitizenConfirmation && (
+                <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5" /> Awaiting citizen confirmation
+                </span>
+              )}
               {ticket.needs_admin_review && (
                 <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-coral-50 text-coral-700 border border-coral-200 flex items-center gap-1">
-                  <AlertTriangle className="w-3.5 h-3.5 text-coral-600" /> Needs classification review
+                  <AlertTriangle className="w-3.5 h-3.5 text-coral-600" /> Needs review
                 </span>
               )}
             </div>
@@ -227,13 +318,15 @@ export default function TicketDetailPage() {
           </div>
         )}
 
-        {/* Prominent Address Text */}
+        {/* Address */}
         <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-civic-50 border border-civic-200 mb-4">
           <MapPin className="w-4 h-4 text-civic-600 mt-0.5 flex-shrink-0" />
           <div className="min-w-0">
             <p className="text-[11px] font-semibold text-civic-800 uppercase tracking-wide">Incident Address</p>
             <p className="text-sm font-semibold text-charcoal-900 mt-0.5">
-              {ticket.address_text || (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(5)}, ${ticket.lng.toFixed(5)}` : 'Location Pending')}
+              {ticket.address_text || (ticket.lat && ticket.lng
+                ? `${ticket.lat.toFixed(5)}, ${ticket.lng.toFixed(5)}`
+                : 'Location Pending')}
             </p>
             <p className="text-[11px] text-charcoal-500 font-mono mt-0.5">
               GPS: {ticket.lat?.toFixed(5)}, {ticket.lng?.toFixed(5)}
@@ -241,11 +334,10 @@ export default function TicketDetailPage() {
           </div>
         </div>
 
-        {/* GPS */}
         <GpsBadge lat={lat} lng={lng} accuracy={accuracy} loading={gpsLoading} error={gpsError} onRefresh={refreshGps} />
       </div>
 
-      {/* Map */}
+      {/* ── Map ── */}
       <MapView
         center={[ticket.lat, ticket.lng]}
         zoom={17}
@@ -254,7 +346,7 @@ export default function TicketDetailPage() {
         className="mb-6"
       />
 
-      {/* SOP Steps */}
+      {/* ── SOP Steps ── */}
       <div className="glass-card mb-6">
         <SOPStepsList
           steps={ticket.sop_steps || []}
@@ -268,115 +360,199 @@ export default function TicketDetailPage() {
         />
       </div>
 
-      {/* Photo Submission */}
+      {/* ══════════════════════════════════════════════════════
+           PROOF OF WORK VERIFICATION SECTION
+          ══════════════════════════════════════════════════════ */}
       <div className="glass-card mb-6">
         <h3 className="text-sm font-bold text-charcoal-800 uppercase tracking-wide mb-4">
           Proof of Work Verification
         </h3>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {/* Before Photo */}
+        {/* ── Citizen before-photo context banner ── */}
+        <div className={`flex items-start gap-2.5 p-3 rounded-xl border mb-4 text-xs ${
+          hasBeforePhoto
+            ? 'bg-civic-50 border-civic-200 text-civic-800'
+            : 'bg-ivory-100 border-ivory-300 text-charcoal-500'
+        }`}>
+          <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="text-xs font-semibold text-charcoal-600 mb-2">📸 Before Work Photo</p>
-            {hasBeforePhoto ? (
-              <div className="p-3 rounded-xl bg-civic-50 border border-civic-200 text-sm text-civic-800 flex items-center gap-2 font-medium">
-                <CheckCircle2 className="w-4 h-4 text-civic-600" /> Before photo uploaded
-              </div>
-            ) : (
-              <div>
-                <PhotoCapture
-                  onCapture={(file) => setBeforePhoto(file)}
-                  label="Take BEFORE photo"
-                />
-                {beforePhoto && (
-                  <button
-                    onClick={() => uploadPhoto(beforePhoto, 'before')}
-                    disabled={uploading}
-                    className="btn-primary w-full mt-2 text-sm py-2"
-                  >
-                    {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                    Upload Before Photo
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* After Photo */}
-          <div>
-            <p className="text-xs font-semibold text-charcoal-600 mb-2">📸 After Work Photo</p>
-            {hasAfterPhoto ? (
-              <div className="p-3 rounded-xl bg-civic-50 border border-civic-200 text-sm text-civic-800 flex items-center gap-2 font-medium">
-                <CheckCircle2 className="w-4 h-4 text-civic-600" /> After photo uploaded
-              </div>
-            ) : (
-              <div>
-                <PhotoCapture
-                  onCapture={(file) => setAfterPhoto(file)}
-                  label="Take AFTER photo"
-                />
-                {afterPhoto && (
-                  <button
-                    onClick={() => uploadPhoto(afterPhoto, 'after')}
-                    disabled={uploading}
-                    className="btn-primary w-full mt-2 text-sm py-2"
-                  >
-                    {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                    Upload After Photo
-                  </button>
-                )}
-              </div>
+            <span className="font-semibold">
+              {hasBeforePhoto
+                ? '📸 Before-photo on file (auto-assigned from citizen report)'
+                : 'ℹ️ No before-photo on file'}
+            </span>
+            {!hasBeforePhoto && (
+              <p className="mt-0.5 text-charcoal-400">
+                Verification will use a single-photo completion check instead of a before/after comparison.
+              </p>
             )}
           </div>
         </div>
 
-        {/* Run Verification */}
-        {hasBeforePhoto && hasAfterPhoto && !verifyResult && (
-          <button
-            onClick={runVerification}
-            disabled={verifying}
-            className="btn-primary w-full mt-4"
-          >
-            {verifying ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Running Anti-Fraud Verification...
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="w-4 h-4" />
-                Run Anti-Fraud Verification
-              </>
-            )}
-          </button>
+        {/* ─────────────────────────────────────────────────────
+             STATE: RESOLVED_PENDING_CITIZEN
+             Read-only status badge + officer self-correction only
+            ───────────────────────────────────────────────────── */}
+        {isAwaitingCitizenConfirmation && (
+          <div className="space-y-4">
+            {/* Passed banner */}
+            <div className="flex items-start gap-3 p-4 rounded-xl bg-civic-50 border border-civic-200 animate-slide-up">
+              <ShieldCheck className="w-5 h-5 text-civic-600 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="font-bold text-civic-800 text-sm">
+                  Verification passed — Awaiting citizen confirmation
+                </p>
+                <p className="text-xs text-charcoal-500 mt-1">
+                  The citizen will be notified and can confirm or reopen this ticket.
+                  This ticket is now read-only for officers.
+                </p>
+                {/* Verification method transparency note */}
+                <p className="text-[11px] text-charcoal-400 mt-2 italic">
+                  🔍 {verifMethodLabel}
+                </p>
+                {ticket.needs_admin_review && (
+                  <p className="text-[11px] text-amber-600 mt-1 font-semibold">
+                    ⚠️ This is a CRITICAL ticket verified without a before-photo — flagged for supervisor review.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Officer self-correction — the ONLY officer action allowed at this state */}
+            <div className="p-4 rounded-xl bg-ivory-100 border border-ivory-300">
+              <p className="text-xs font-bold text-charcoal-700 mb-1 flex items-center gap-1.5">
+                <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
+                Actually not fixed? Revert before the citizen sees it.
+              </p>
+              <p className="text-[11px] text-charcoal-500 mb-3">
+                If you realise the repair wasn't complete, you can revert the ticket to In Progress.
+                This is an officer self-correction, not a closure action.
+              </p>
+              <textarea
+                id="officer-reopen-reason"
+                rows={2}
+                placeholder="Short reason (required) — e.g. 'Missed a section of pothole fill'"
+                value={reopenReason}
+                onChange={(e) => { setReopenReason(e.target.value); setReopenError(null) }}
+                className="w-full text-xs rounded-lg border border-charcoal-200 bg-white px-3 py-2 text-charcoal-800 placeholder-charcoal-400 focus:outline-none focus:ring-2 focus:ring-civic-400 resize-none mb-2"
+              />
+              {reopenError && (
+                <p className="text-xs text-coral-600 mb-2">{reopenError}</p>
+              )}
+              <button
+                id="btn-officer-self-correction-reopen"
+                onClick={submitOfficerReopen}
+                disabled={reopening || !reopenReason.trim()}
+                className="btn btn-secondary text-xs w-full flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {reopening ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Reverting...</>
+                ) : (
+                  <><RotateCcw className="w-3.5 h-3.5" /> Actually not fixed — reopen for correction</>
+                )}
+              </button>
+              <p className="text-[10px] text-charcoal-400 mt-1.5 text-center">
+                ⚠️ This will NOT close the ticket. It returns it to In Progress in your queue.
+              </p>
+            </div>
+          </div>
         )}
 
-        {/* Verification Result */}
-        {verifyResult && (
-          <div className={`mt-4 p-4 rounded-xl border animate-slide-up ${
-            verifyResult.overall_passed
-              ? 'bg-civic-50 border-civic-200 text-civic-900'
-              : 'bg-coral-50 border-coral-200 text-coral-900'
-          }`}>
-            <div className="flex items-center gap-2 mb-3">
-              {verifyResult.overall_passed ? (
-                <CheckCircle2 className="w-5 h-5 text-civic-600" />
-              ) : (
-                <AlertTriangle className="w-5 h-5 text-coral-600" />
+        {/* ─────────────────────────────────────────────────────
+             STATE: Verification just RAN and FAILED
+             Show failure details + retry upload only — no bypass
+            ───────────────────────────────────────────────────── */}
+        {verifyResult && !verifyResult.overall_passed && !isAwaitingCitizenConfirmation && (
+          <div className="space-y-4 animate-slide-up">
+            <div className="flex items-start gap-3 p-4 rounded-xl bg-coral-50 border border-coral-200">
+              <ShieldX className="w-5 h-5 text-coral-600 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="font-bold text-coral-800 text-sm">Verification failed</p>
+                <div className="space-y-1 text-xs text-charcoal-600 font-medium mt-2">
+                  <p>🗺️ Geofence: {verifyResult.geofence_passed ? '✅ Passed' : '❌ Failed'}</p>
+                  {verifyResult.verification_method === 'before_after_comparison' && (
+                    <p>📍 Same Location: {verifyResult.same_location ? '✅ Yes' : '❌ No'}</p>
+                  )}
+                  <p>🔧 Defect Resolved: {verifyResult.defect_resolved ? '✅ Yes' : '❌ No'}</p>
+                  {verifyResult.notes && <p className="text-charcoal-500">📝 {verifyResult.notes}</p>}
+                </div>
+                {/* Method transparency */}
+                <p className="text-[11px] text-charcoal-400 mt-2 italic">
+                  🔍 {verifMethodLabel}
+                </p>
+              </div>
+            </div>
+
+            {/* ONLY allowed action after failure: re-upload */}
+            <div>
+              <p className="text-xs font-semibold text-charcoal-600 mb-2 flex items-center gap-1.5">
+                <Camera className="w-4 h-4" /> Retry — Upload a new after photo
+              </p>
+              <PhotoCapture onCapture={(file) => setAfterPhoto(file)} label="Take new AFTER photo" />
+              {afterPhoto && (
+                <button
+                  id="btn-retry-upload-after-photo"
+                  onClick={() => uploadAfterPhoto(afterPhoto)}
+                  disabled={uploading}
+                  className="btn btn-primary w-full mt-2 text-sm py-2 flex items-center justify-center gap-2"
+                >
+                  {uploading
+                    ? <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
+                    : <><Upload className="w-4 h-4" /> Upload New After Photo</>}
+                </button>
               )}
-              <span className={`font-bold ${
-                verifyResult.overall_passed ? 'text-civic-800' : 'text-coral-700'
-              }`}>
-                {verifyResult.overall_passed ? 'Verification Passed' : 'Verification Failed'}
-              </span>
             </div>
-            <div className="space-y-1 text-xs text-charcoal-600 font-medium">
-              <p>🗺️ Geofence: {verifyResult.geofence_passed ? '✅ Passed' : '❌ Failed'}</p>
-              <p>📍 Same Location: {verifyResult.same_location ? '✅ Yes' : '❌ No'}</p>
-              <p>🔧 Defect Resolved: {verifyResult.defect_resolved ? '✅ Yes' : '❌ No'}</p>
-              <p>⭐ Confidence: {(verifyResult.confidence * 100).toFixed(0)}%</p>
-              {verifyResult.notes && <p>📝 Notes: {verifyResult.notes}</p>}
+          </div>
+        )}
+
+        {/* ─────────────────────────────────────────────────────
+             STATE: No after photo yet — capture & upload flow
+            ───────────────────────────────────────────────────── */}
+        {!hasAfterPhoto && !isAwaitingCitizenConfirmation && !(verifyResult && !verifyResult.overall_passed) && (
+          <div>
+            <p className="text-xs font-semibold text-charcoal-600 mb-2 flex items-center gap-1.5">
+              <Camera className="w-4 h-4" /> 📸 After Work Photo (required)
+            </p>
+            <PhotoCapture onCapture={(file) => setAfterPhoto(file)} label="Take AFTER photo" />
+            {afterPhoto && (
+              <button
+                id="btn-upload-after-photo"
+                onClick={() => uploadAfterPhoto(afterPhoto)}
+                disabled={uploading}
+                className="btn btn-primary w-full mt-2 text-sm py-2 flex items-center justify-center gap-2"
+              >
+                {uploading
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Uploading...</>
+                  : <><Upload className="w-4 h-4" /> Upload After Photo</>}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* ─────────────────────────────────────────────────────
+             STATE: After photo uploaded, not yet verified
+             (and no stale failed result in view)
+            ───────────────────────────────────────────────────── */}
+        {hasAfterPhoto && !isAwaitingCitizenConfirmation && !(verifyResult && !verifyResult.overall_passed) && (
+          <div className="space-y-3">
+            <div className="p-3 rounded-xl bg-civic-50 border border-civic-200 text-sm text-civic-800 flex items-center gap-2 font-medium">
+              <CheckCircle2 className="w-4 h-4 text-civic-600" /> After photo uploaded
             </div>
+
+            {!verifyResult && (
+              <button
+                id="btn-run-verification"
+                onClick={runVerification}
+                disabled={verifying}
+                className="btn btn-primary w-full flex items-center justify-center gap-2"
+              >
+                {verifying ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Running Verification...</>
+                ) : (
+                  <><ShieldCheck className="w-4 h-4" /> Run Anti-Fraud Verification</>
+                )}
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS master_tickets (
     text_embedding vector(384),
     needs_admin_review BOOLEAN DEFAULT false,
     department_reassigned_by UUID REFERENCES auth.users(id),
-    department_reassigned_at TIMESTAMPTZ
+    department_reassigned_at TIMESTAMPTZ,
+    has_before_photo BOOLEAN DEFAULT false  -- cached: true when citizen photo auto-assigned as before-photo
 );
 
 -- Individual citizen reports linked to a master ticket
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS ticket_reports (
     transcript TEXT,
     translated_text TEXT,
     image_url TEXT,
+    image_sharpness_score DOUBLE PRECISION,  -- Laplacian variance, computed at upload
     text_embedding vector(384),
     lat DOUBLE PRECISION,
     lng DOUBLE PRECISION,
@@ -123,7 +125,7 @@ CREATE TABLE IF NOT EXISTS ticket_reports (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Before/after verification photos from field officers
+-- Before/after verification photos from field officers + auto-assigned citizen photos
 CREATE TABLE IF NOT EXISTS verification_photos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     master_ticket_id UUID NOT NULL REFERENCES master_tickets(id) ON DELETE CASCADE,
@@ -137,7 +139,9 @@ CREATE TABLE IF NOT EXISTS verification_photos (
     ) STORED,
     captured_at TIMESTAMPTZ DEFAULT now(),
     fraud_check_passed BOOLEAN,
-    fraud_check_notes TEXT
+    fraud_check_notes TEXT,
+    verification_method TEXT DEFAULT 'before_after_comparison',  -- 'before_after_comparison' | 'single_photo_completion'
+    source_report_id UUID REFERENCES ticket_reports(id)          -- FK to originating ticket_report (for sharpness lookup)
 );
 
 -- Hotspot infrastructure alerts

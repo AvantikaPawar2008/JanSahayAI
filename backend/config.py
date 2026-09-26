@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # LLM model names
     groq_text_model: str = "openai/gpt-oss-20b"
     groq_vision_model: str = "llama-3.2-11b-vision-preview"
-    groq_whisper_model: str = "whisper-large-v3"
+    groq_whisper_model: str = "whisper-large-v3-turbo"
 
     # Embedding model
     embedding_model_name: str = "all-MiniLM-L6-v2"

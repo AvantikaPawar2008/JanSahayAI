@@ -190,6 +190,7 @@ class VerificationResult(BaseModel):
     confidence: float = 0.0
     notes: str = ""
     overall_passed: bool
+    verification_method: Optional[str] = None  # 'before_after_comparison' | 'single_photo_completion'
 
 
 # ============================================================

@@ -26,22 +26,41 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
         tmp.write(audio_bytes)
         tmp_path = tmp.name
 
+    model_to_use = settings.groq_whisper_model
     try:
-        # Step 1: Transcribe in original language
-        with open(tmp_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model=settings.groq_whisper_model,
-                file=audio_file,
-                response_format="text",
-            )
+        try:
+            # Step 1: Transcribe in original language
+            with open(tmp_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_to_use,
+                    file=audio_file,
+                    response_format="text",
+                )
 
-        # Step 2: Translate to English (Whisper's translate endpoint)
-        with open(tmp_path, "rb") as audio_file:
-            translation = client.audio.translations.create(
-                model=settings.groq_whisper_model,
-                file=audio_file,
-                response_format="text",
-            )
+            # Step 2: Translate to English (Whisper's translate endpoint)
+            with open(tmp_path, "rb") as audio_file:
+                translation = client.audio.translations.create(
+                    model=model_to_use,
+                    file=audio_file,
+                    response_format="text",
+                )
+        except Exception as e:
+            if model_to_use != "whisper-large-v3":
+                # Fallback to standard whisper-large-v3
+                with open(tmp_path, "rb") as audio_file:
+                    transcription = client.audio.transcriptions.create(
+                        model="whisper-large-v3",
+                        file=audio_file,
+                        response_format="text",
+                    )
+                with open(tmp_path, "rb") as audio_file:
+                    translation = client.audio.translations.create(
+                        model="whisper-large-v3",
+                        file=audio_file,
+                        response_format="text",
+                    )
+            else:
+                raise e
 
         return {
             "transcript": transcription if isinstance(transcription, str) else transcription.text,

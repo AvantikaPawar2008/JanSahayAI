@@ -1,6 +1,7 @@
 """Haversine distance calculations and GPS geofence validation for field verification."""
 
 import math
+from typing import Optional, Tuple, Dict
 from backend.config import get_settings
 
 
@@ -189,15 +190,21 @@ async def geocode_landmark(query: str, default_city: str = "Pune") -> Optional[T
     return None
 
 
+_landmark_extraction_cache: Dict[str, Optional[str]] = {}
+
+
 async def extract_problem_landmark_from_text(text: str) -> Optional[str]:
     """
     Extracts the physical landmark, station, road, intersection, or area mentioned in the complaint text.
     Uses fast regex matching first, then Groq LLM extraction for natural phrasing.
+    Cached in-memory to prevent repeated LLM calls on similar reports.
     """
     if not text or len(text.strip()) < 5:
         return None
 
     clean_text = text.strip()
+    if clean_text in _landmark_extraction_cache:
+        return _landmark_extraction_cache[clean_text]
 
     # 1. Fast regex pattern for common Indian landmark phrasing
     regex_pattern = re.compile(
@@ -210,6 +217,7 @@ async def extract_problem_landmark_from_text(text: str) -> Optional[str]:
         # Clean leading prepositions/articles if captured
         extracted = re.sub(r"^(?:the|a|an|front of|near|at|of)\s+", "", extracted, flags=re.IGNORECASE).strip()
         if len(extracted) >= 4:
+            _landmark_extraction_cache[clean_text] = extracted
             return extracted
 
     # 2. LLM-based landmark extraction via Groq
@@ -237,10 +245,13 @@ async def extract_problem_landmark_from_text(text: str) -> Optional[str]:
         data = json.loads(resp.choices[0].message.content)
         loc = data.get("location_name")
         if loc and isinstance(loc, str) and len(loc.strip()) >= 3:
-            return loc.strip()
+            extracted_loc = loc.strip()
+            _landmark_extraction_cache[clean_text] = extracted_loc
+            return extracted_loc
     except Exception as e:
         logger.debug(f"LLM landmark extraction fallback skipped: {e}")
 
+    _landmark_extraction_cache[clean_text] = None
     return None
 
 
@@ -326,5 +337,6 @@ async def resolve_incident_location(
         "resolved_address": None,
         "is_remote_report": False,
     }
+
 
 
