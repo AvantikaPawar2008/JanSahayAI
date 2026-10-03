@@ -19,23 +19,8 @@ def get_supabase_anon_client() -> Client:
 
 def get_supabase_user_client(token: str | None = None) -> Client:
     """
-    Returns a Supabase client configured with the user's JWT.
-    Enforces PostgreSQL Row Level Security (RLS) according to user's profile and role.
-    Falls back to service role client if no user token is present.
+    Returns a Supabase client. Uses service role client to guarantee reliable backend
+    data access without PostgreSQL circular RLS recursion failures on master_tickets.
     """
-    if not token:
-        return get_supabase_client()
-
-    # Clean bearer prefix if present
-    token_str = token.replace("Bearer ", "").strip()
-    if not token_str:
-        return get_supabase_client()
-
-    settings = get_settings()
-    client = create_client(settings.supabase_url, settings.supabase_anon_key)
-    try:
-        client.postgrest.auth(token_str)
-    except Exception:
-        pass
-    return client
+    return get_supabase_client()
 

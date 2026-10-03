@@ -13,12 +13,14 @@ Updated (Migration 009):
 import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from backend.db.supabase_client import get_supabase_client
 from backend.services.geo_service import is_within_geofence
-from backend.services.vision_service import verify_repair_photo, compare_before_after
+from backend.services.vision_service import verify_repair_photo, compare_before_after, verify_repair_photo_rubric
 from backend.services.notification_service import send_citizen_notification
+from backend.services.event_service import record_ticket_event
+from backend.services.warranty_service import set_ticket_warranty
 from backend.models.schemas import VerificationResult
 
 logger = logging.getLogger("civicpulse.verification")
@@ -28,6 +30,10 @@ router = APIRouter(prefix="/api/verify", tags=["Verification"])
 class VerifyPhotoRequest(BaseModel):
     master_ticket_id: str
     officer_id: str | None = None
+    is_mock_location: Optional[bool] = False
+    device_tilt: Optional[float] = None
+    device_heading: Optional[float] = None
+    gps_readings: Optional[List[Dict[str, Any]]] = None
 
 
 class CitizenResponseRequest(BaseModel):
@@ -90,6 +96,43 @@ async def verify_before_after(request: VerifyPhotoRequest):
     after_photo = after_photos[0]
 
     # ------------------------------------------------------------------
+    # Check 0: Anti-Spoof Telemetry & Mock Location Detection
+    # ------------------------------------------------------------------
+    if request.is_mock_location:
+        notes = "Fraud Alert: Mock location provider detected on officer device during photo capture."
+        result = VerificationResult(
+            geofence_passed=False,
+            vision_check_passed=False,
+            same_location=False,
+            defect_resolved=False,
+            confidence=0.0,
+            notes=notes,
+            overall_passed=False,
+            verification_method="before_after_comparison" if ticket.get("has_before_photo") else "single_photo_completion",
+        )
+        supabase.table("verification_photos").update({
+            "fraud_check_passed": False,
+            "fraud_check_notes": notes,
+        }).eq("id", after_photo["id"]).execute()
+
+        supabase.table("master_tickets").update({
+            "needs_admin_review": True,
+        }).eq("id", request.master_ticket_id).execute()
+
+        record_ticket_event(
+            ticket_id=request.master_ticket_id,
+            event_type="FRAUD_FLAGGED",
+            actor_id=request.officer_id,
+            actor_role="officer",
+            metadata={
+                "reason": "mock_location_detected",
+                "device_tilt": request.device_tilt,
+                "device_heading": request.device_heading,
+            },
+        )
+        return result
+
+    # ------------------------------------------------------------------
     # Check 1: Geofence — is the after photo within 150m of the ticket?
     # This check is MANDATORY regardless of verification path.
     # ------------------------------------------------------------------
@@ -117,16 +160,48 @@ async def verify_before_after(request: VerifyPhotoRequest):
             "fraud_check_notes": notes,
         }).eq("id", after_photo["id"]).execute()
 
+        record_ticket_event(
+            ticket_id=request.master_ticket_id,
+            event_type="FRAUD_FLAGGED",
+            actor_id=request.officer_id,
+            actor_role="officer",
+            metadata={
+                "reason": "geofence_breach",
+                "distance_meters": after_distance,
+                "max_allowed": 150.0,
+            },
+        )
+
         return result
 
     # ------------------------------------------------------------------
-    # Check 2: VLM verification (branches internally on has_before_photo)
+    # Check 2: VLM verification
+    # [TODO-VF-03] Use multi-criteria rubric when before photo is available;
+    # fall back to existing single/before-after verify for no-before-photo path.
     # ------------------------------------------------------------------
+    rubric_result = None
     try:
-        vlm_result = await verify_repair_photo(
-            master_ticket=ticket,
-            after_photo_url=after_photo["image_url"],
-        )
+        if ticket.get("has_before_photo"):
+            # Primary path: rubric-based multi-criteria scoring
+            rubric_result = await verify_repair_photo_rubric(
+                master_ticket=ticket,
+                after_photo_url=after_photo["image_url"],
+            )
+            vlm_result = {
+                "passed": rubric_result["passed"],
+                "notes": rubric_result["notes"],
+                "verification_method": rubric_result["verification_method"],
+                "same_location": rubric_result["site_match"] >= 3,
+                "defect_resolved": rubric_result["defect_resolved"] >= 3,
+                "repair_quality": ["POOR", "POOR", "ACCEPTABLE", "ACCEPTABLE", "GOOD", "GOOD"][min(5, rubric_result["repair_quality"])],
+                "confidence": rubric_result["confidence"],
+                "needs_supervisor_review": rubric_result["needs_supervisor_review"],
+            }
+        else:
+            vlm_result = await verify_repair_photo(
+                master_ticket=ticket,
+                after_photo_url=after_photo["image_url"],
+            )
     except Exception as exc:
         logger.error(f"verify_repair_photo failed for ticket {request.master_ticket_id}: {exc}")
         vlm_result = {
@@ -156,12 +231,21 @@ async def verify_before_after(request: VerifyPhotoRequest):
         verification_method=method,
     )
 
-    # Store method + result on the after-photo record
-    supabase.table("verification_photos").update({
+    # Store method + rubric result on the after-photo record
+    photo_update = {
         "fraud_check_passed": overall_passed,
         "fraud_check_notes": result.notes,
         "verification_method": method,
-    }).eq("id", after_photo["id"]).execute()
+    }
+    # [TODO-VF-03] Persist rubric scores
+    if rubric_result:
+        photo_update["rubric_site_match"] = rubric_result.get("site_match")
+        photo_update["rubric_defect_resolved"] = rubric_result.get("defect_resolved")
+        photo_update["rubric_repair_quality"] = rubric_result.get("repair_quality")
+        photo_update["rubric_total_score"] = rubric_result.get("total_score")
+        photo_update["rubric_verdict"] = rubric_result.get("verdict")
+        photo_update["needs_supervisor_review"] = rubric_result.get("needs_supervisor_review", False)
+    supabase.table("verification_photos").update(photo_update).eq("id", after_photo["id"]).execute()
 
     # Also stamp method on the before-photo if it exists
     before_photos = [p for p in photos if p["photo_type"] == "before"]
@@ -172,7 +256,10 @@ async def verify_before_after(request: VerifyPhotoRequest):
         }).eq("id", before_photos[0]["id"]).execute()
 
     if overall_passed:
-        ticket_update = {"status": "RESOLVED_PENDING_CITIZEN"}
+        ticket_update = {
+            "status": "RESOLVED_PENDING_CITIZEN",
+            "citizen_confirmation_status": "PENDING",
+        }
         if needs_supervisor:
             # CRITICAL + single-photo fallback → flag for admin/supervisor review
             ticket_update["needs_admin_review"] = True
@@ -184,6 +271,20 @@ async def verify_before_after(request: VerifyPhotoRequest):
         supabase.table("master_tickets").update(ticket_update).eq(
             "id", request.master_ticket_id
         ).execute()
+
+        record_ticket_event(
+            ticket_id=request.master_ticket_id,
+            event_type="VERIFIED_PENDING_CITIZEN",
+            actor_id=request.officer_id,
+            actor_role="officer",
+            metadata={
+                "verification_method": method,
+                "confidence": result.confidence,
+                "repair_quality": result.repair_quality,
+                "needs_supervisor": needs_supervisor,
+                "distance_meters": after_distance,
+            },
+        )
 
         logger.info(
             f"Ticket {request.master_ticket_id} verification PASSED via {method} — "
@@ -214,6 +315,7 @@ async def citizen_verify_resolution(request: CitizenResponseRequest):
         from datetime import datetime, timezone
         update_data = {
             "status": "RESOLVED",
+            "citizen_confirmation_status": "CONFIRMED",
             "resolved_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
@@ -225,10 +327,42 @@ async def citizen_verify_resolution(request: CitizenResponseRequest):
             else:
                 raise e
 
+        # [TODO-DD-01] Set 60-day contractor warranty on resolution
+        try:
+            ticket_data = supabase.table("master_tickets").select("contractor_id, assigned_officer_id").eq("id", request.master_ticket_id).single().execute()
+            contractor = (ticket_data.data or {}).get("contractor_id") or (ticket_data.data or {}).get("assigned_officer_id")
+            await set_ticket_warranty(
+                master_ticket_id=request.master_ticket_id,
+                contractor_id=contractor,
+            )
+        except Exception as warranty_err:
+            logger.debug(f"Warranty assignment skipped: {warranty_err}")
+
+        # Award Civic Karma (+0.1) to reporting citizens for participation
+        try:
+            reports_res = supabase.table("ticket_reports").select("citizen_id").eq("master_ticket_id", request.master_ticket_id).execute()
+            for rep in (reports_res.data or []):
+                c_id = rep.get("citizen_id")
+                if c_id:
+                    c_data = supabase.table("citizens").select("civic_karma").eq("id", c_id).single().execute()
+                    if c_data.data:
+                        curr_karma = c_data.data.get("civic_karma") or 1.0
+                        supabase.table("citizens").update({"civic_karma": round(curr_karma + 0.1, 2)}).eq("id", c_id).execute()
+        except Exception as karma_err:
+            logger.debug(f"Karma update skipped: {karma_err}")
+
+        record_ticket_event(
+            ticket_id=request.master_ticket_id,
+            event_type="CITIZEN_CONFIRMED",
+            actor_role="citizen",
+            metadata={"status": "RESOLVED"},
+        )
+
         return {"status": "RESOLVED", "message": "Thank you for confirming the resolution!"}
     else:
         update_data = {
             "status": "REOPENED",
+            "citizen_confirmation_status": "DISPUTED",
             "needs_admin_review": True,
         }
         supabase.table("master_tickets").update(update_data).eq("id", request.master_ticket_id).execute()
@@ -239,6 +373,13 @@ async def citizen_verify_resolution(request: CitizenResponseRequest):
         except Exception:
             pass
 
+        record_ticket_event(
+            ticket_id=request.master_ticket_id,
+            event_type="CITIZEN_DISPUTED",
+            actor_role="citizen",
+            metadata={"status": "REOPENED", "needs_admin_review": True},
+        )
+
         return {"status": "REOPENED", "message": "Ticket has been reopened. An officer will be reassigned."}
 
 
@@ -247,14 +388,6 @@ async def officer_self_correction_reopen(request: OfficerReopenRequest):
     """
     Officer catches their own mistake after a passed verification and reverts the ticket
     to IN_PROGRESS before the citizen sees the 'awaiting confirmation' notification.
-
-    This is NOT a close/resolve action — it's a self-correction that puts the ticket
-    back in the officer's own queue so they can re-do the repair properly.
-
-    Requirements:
-    - Ticket must be in RESOLVED_PENDING_CITIZEN status.
-    - A non-empty reason must be provided.
-    - Sets reopened_by = 'officer_self_correction' (stored in fraud_check_notes on latest photo).
     """
     supabase = get_supabase_client()
 
@@ -300,6 +433,14 @@ async def officer_self_correction_reopen(request: OfficerReopenRequest):
             "fraud_check_passed": False,
             "fraud_check_notes": correction_note,
         }).eq("id", photos_res.data[0]["id"]).execute()
+
+    record_ticket_event(
+        ticket_id=request.master_ticket_id,
+        event_type="OFFICER_REOPENED",
+        actor_id=request.officer_id,
+        actor_role="officer",
+        metadata={"reason": request.reason.strip()},
+    )
 
     logger.info(
         f"Officer self-correction reopen for ticket {request.master_ticket_id} "

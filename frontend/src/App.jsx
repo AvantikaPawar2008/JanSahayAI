@@ -1,8 +1,10 @@
 import { Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
 import {
   Activity,
+  Play,
   FileText,
   Shield,
+  ShieldCheck,
   MapPin,
   Flame,
   BarChart3,
@@ -14,6 +16,11 @@ import {
   User,
   Loader2,
   Clock,
+  Eye,
+  CloudRain,
+  Briefcase,
+  TrendingUp,
+  AlertOctagon,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -37,15 +44,44 @@ import TicketDetailPage from './pages/officer/TicketDetailPage'
 import AdminDashboardPage from './pages/admin/AdminDashboardPage'
 import HotspotMapPage from './pages/admin/HotspotMapPage'
 import HotspotAlertsPage from './pages/admin/HotspotAlertsPage'
+import SupervisorReviewPage from './pages/admin/SupervisorReviewPage'
+import InfrastructureRiskPage from './pages/admin/InfrastructureRiskPage'
+import ContractorPerformancePage from './pages/admin/ContractorPerformancePage'
+import PoissonHotspotPage from './pages/admin/PoissonHotspotPage'
+
+// Public Transparency Page
+import TransparencyPage from './pages/public/TransparencyPage'
 
 export default function App() {
-  const { user, profile, role, loading, logout } = useAuth()
+  const { user, profile, role, loading, login, logout } = useAuth()
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [switchingRole, setSwitchingRole] = useState(false)
 
   const handleLogout = async () => {
     await logout()
     navigate('/login')
+  }
+
+  const switchDemoRole = async (targetRole) => {
+    if (switchingRole || role === targetRole) return
+    setSwitchingRole(true)
+    try {
+      const creds = {
+        citizen: { email: 'citizen@pune.gov.in', password: 'Password@123', path: '/citizen/history' },
+        officer: { email: 'officer@pune.gov.in', password: 'Password@123', path: '/officer/queue' },
+        admin: { email: 'admin@pune.gov.in', password: 'Password@123', path: '/admin/dashboard' },
+      }
+      const c = creds[targetRole]
+      if (c) {
+        await login(c.email, c.password)
+        navigate(c.path)
+      }
+    } catch (err) {
+      console.error('Demo role switch error:', err)
+    } finally {
+      setSwitchingRole(false)
+    }
   }
 
   // Home redirect helper based on role
@@ -78,14 +114,17 @@ export default function App() {
               {/* Citizen Links */}
               {(!user || role === 'citizen' || role === 'admin') && (
                 <>
-                  <NavLink to="/citizen/history" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <Clock className="w-4 h-4 text-civic-600" /> My Tickets
-                  </NavLink>
                   <NavLink to="/citizen/report" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                     <FileText className="w-4 h-4 text-civic-600" /> Report Issue
                   </NavLink>
+                  <NavLink to="/citizen/history" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                    <Clock className="w-4 h-4 text-civic-600" /> My Tickets
+                  </NavLink>
                   <NavLink to="/citizen/track" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                    <MapPin className="w-4 h-4 text-civic-600" /> Track
+                    <MapPin className="w-4 h-4 text-civic-600" /> Track Ticket
+                  </NavLink>
+                  <NavLink to="/transparency" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} title="Public Accountability & Officer Workload Tracker">
+                    <Eye className="w-4 h-4 text-civic-600" /> Accountability Board
                   </NavLink>
                 </>
               )}
@@ -113,8 +152,67 @@ export default function App() {
                   <NavLink to="/admin/alerts" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                     <Bell className="w-4 h-4 text-amber-600" /> Alerts
                   </NavLink>
+                  <NavLink to="/admin/poisson" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                    <TrendingUp className="w-4 h-4 text-purple-600" /> Stats
+                  </NavLink>
+                  <NavLink to="/admin/review" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                    <Eye className="w-4 h-4 text-amber-600" /> Review
+                  </NavLink>
+                  <NavLink to="/admin/risk" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                    <CloudRain className="w-4 h-4 text-blue-600" /> Infra Risk
+                  </NavLink>
+                  <NavLink to="/admin/contractor" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                    <Briefcase className="w-4 h-4 text-sage-600" /> Contractors
+                  </NavLink>
                 </>
               )}
+            </div>
+
+
+            {/* Quick Demo Switcher Widget */}
+            <div className="hidden lg:flex items-center gap-1 bg-ivory-100/90 p-1 rounded-xl border border-ivory-300 text-xs">
+              <span className="text-[10px] font-bold text-charcoal-400 uppercase tracking-wider px-1">
+                Role:
+              </span>
+              <button
+                type="button"
+                onClick={() => switchDemoRole('citizen')}
+                disabled={switchingRole}
+                className={`px-2 py-0.5 rounded-lg text-xs font-semibold transition-all ${
+                  role === 'citizen'
+                    ? 'bg-white text-emerald-800 shadow-2xs border border-ivory-300'
+                    : 'text-charcoal-500 hover:text-charcoal-900 hover:bg-white/50'
+                }`}
+                title="1-Click: Switch to Citizen (Pooja Patil)"
+              >
+                👤 Citizen
+              </button>
+              <button
+                type="button"
+                onClick={() => switchDemoRole('officer')}
+                disabled={switchingRole}
+                className={`px-2 py-0.5 rounded-lg text-xs font-semibold transition-all ${
+                  role === 'officer'
+                    ? 'bg-white text-amber-900 shadow-2xs border border-ivory-300'
+                    : 'text-charcoal-500 hover:text-charcoal-900 hover:bg-white/50'
+                }`}
+                title="1-Click: Switch to Officer (Ramesh Shinde - Roads)"
+              >
+                🛡️ Officer
+              </button>
+              <button
+                type="button"
+                onClick={() => switchDemoRole('admin')}
+                disabled={switchingRole}
+                className={`px-2 py-0.5 rounded-lg text-xs font-semibold transition-all ${
+                  role === 'admin'
+                    ? 'bg-white text-blue-900 shadow-2xs border border-ivory-300'
+                    : 'text-charcoal-500 hover:text-charcoal-900 hover:bg-white/50'
+                }`}
+                title="1-Click: Switch to Admin (Commissioner)"
+              >
+                🏛️ Admin
+              </button>
             </div>
 
             {/* Auth / Profile Actions */}
@@ -186,6 +284,9 @@ export default function App() {
               <NavLink to="/citizen/track" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
                 <MapPin className="w-4 h-4" /> Track Tickets
               </NavLink>
+              <NavLink to="/transparency" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
+                <Eye className="w-4 h-4 text-civic-600" /> Accountability Board
+              </NavLink>
 
               {(role === 'officer' || role === 'admin') && (
                 <NavLink to="/officer/queue" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
@@ -204,10 +305,48 @@ export default function App() {
                   <NavLink to="/admin/alerts" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
                     <Bell className="w-4 h-4" /> Alerts
                   </NavLink>
+                  <NavLink to="/admin/poisson" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
+                    <TrendingUp className="w-4 h-4" /> Poisson Stats
+                  </NavLink>
+                  <NavLink to="/admin/review" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
+                    <Eye className="w-4 h-4" /> Review Queue
+                  </NavLink>
+                  <NavLink to="/admin/risk" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
+                    <CloudRain className="w-4 h-4" /> Infra Risk
+                  </NavLink>
+                  <NavLink to="/admin/contractor" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} onClick={() => setMobileMenuOpen(false)}>
+                    <Briefcase className="w-4 h-4" /> Contractors
+                  </NavLink>
                 </>
               )}
 
+              {/* Mobile Demo Role Switcher */}
               <div className="pt-2 border-t border-ivory-200">
+                <p className="text-[11px] font-bold text-charcoal-400 uppercase tracking-wider mb-2">Switch Demo Account:</p>
+                <div className="grid grid-cols-3 gap-1.5 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => { setMobileMenuOpen(false); switchDemoRole('citizen'); }}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-semibold border ${role === 'citizen' ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-ivory-100 text-charcoal-700 border-ivory-200'}`}
+                  >
+                    👤 Citizen
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setMobileMenuOpen(false); switchDemoRole('officer'); }}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-semibold border ${role === 'officer' ? 'bg-amber-50 text-amber-900 border-amber-300' : 'bg-ivory-100 text-charcoal-700 border-ivory-200'}`}
+                  >
+                    🛡️ Officer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setMobileMenuOpen(false); switchDemoRole('admin'); }}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-semibold border ${role === 'admin' ? 'bg-blue-50 text-blue-900 border-blue-300' : 'bg-ivory-100 text-charcoal-700 border-ivory-200'}`}
+                  >
+                    🏛️ Admin
+                  </button>
+                </div>
+
                 {user ? (
                   <button
                     onClick={() => {
@@ -237,9 +376,10 @@ export default function App() {
       {/* Main Content with Route Groups Protected by RoleGuard */}
       <main className="flex-1">
         <Routes>
-          {/* Public Auth Routes */}
+          {/* Public Routes */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
+          <Route path="/transparency" element={<TransparencyPage />} />
 
           {/* Root Redirect */}
           <Route
@@ -337,6 +477,38 @@ export default function App() {
             element={
               <RoleGuard allow={['admin']}>
                 <HotspotAlertsPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/review"
+            element={
+              <RoleGuard allow={['admin']}>
+                <SupervisorReviewPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/risk"
+            element={
+              <RoleGuard allow={['admin']}>
+                <InfrastructureRiskPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/contractor"
+            element={
+              <RoleGuard allow={['admin']}>
+                <ContractorPerformancePage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/poisson"
+            element={
+              <RoleGuard allow={['admin']}>
+                <PoissonHotspotPage />
               </RoleGuard>
             }
           />

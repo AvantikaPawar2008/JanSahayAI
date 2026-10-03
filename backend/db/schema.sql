@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS citizens (
     auth_user_id UUID UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
     phone_number TEXT,
     name TEXT NOT NULL,
+    civic_karma DOUBLE PRECISION DEFAULT 1.0,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -102,12 +103,27 @@ CREATE TABLE IF NOT EXISTS master_tickets (
     needs_admin_review BOOLEAN DEFAULT false,
     department_reassigned_by UUID REFERENCES auth.users(id),
     department_reassigned_at TIMESTAMPTZ,
-    has_before_photo BOOLEAN DEFAULT false  -- cached: true when citizen photo auto-assigned as before-photo
+    has_before_photo BOOLEAN DEFAULT false,  -- cached: true when citizen photo auto-assigned as before-photo
+    -- Audit Provenance & Calibrated Model Decisions
+    dedup_similarity_score DOUBLE PRECISION,
+    dedup_threshold_zone TEXT,
+    dedup_laya_decision TEXT,
+    triage_confidence DOUBLE PRECISION,
+    -- Recurrence Tracking & Contractor Warranty
+    recurrence_count INTEGER DEFAULT 0,
+    first_seen_at TIMESTAMPTZ DEFAULT now(),
+    last_seen_at TIMESTAMPTZ DEFAULT now(),
+    warranty_until TIMESTAMPTZ,
+    contractor_id UUID REFERENCES officers(id),
+    -- Citizen Closed-Loop 48h Sign-Off
+    citizen_confirmation_status TEXT DEFAULT 'PENDING',
+    citizen_dispute_reason TEXT
 );
 
 -- Individual citizen reports linked to a master ticket
 CREATE TABLE IF NOT EXISTS ticket_reports (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    idempotency_key UUID UNIQUE,
     master_ticket_id UUID NOT NULL REFERENCES master_tickets(id) ON DELETE CASCADE,
     citizen_id UUID REFERENCES citizens(id),
     raw_text TEXT,
@@ -118,6 +134,8 @@ CREATE TABLE IF NOT EXISTS ticket_reports (
     text_embedding vector(384),
     lat DOUBLE PRECISION,
     lng DOUBLE PRECISION,
+    client_accuracy DOUBLE PRECISION,
+    is_mock_location BOOLEAN DEFAULT false,
     location_source TEXT DEFAULT 'gps',
     location geography(POINT, 4326) GENERATED ALWAYS AS (
         ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography
@@ -171,6 +189,22 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Immutable audit log for all model decisions, status changes, and fraud checks
+CREATE TABLE IF NOT EXISTS ticket_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id UUID NOT NULL REFERENCES master_tickets(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    actor_id UUID,
+    actor_role TEXT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    model_version TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_events_ticket_id ON ticket_events(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_ticket_events_event_type ON ticket_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_ticket_events_created_at ON ticket_events(created_at DESC);
+
 -- ============================================================
 -- 4. INDEXES
 -- ============================================================
@@ -216,6 +250,12 @@ CREATE INDEX IF NOT EXISTS idx_hotspot_alerts_department
 CREATE INDEX IF NOT EXISTS idx_hotspot_alerts_sub_category
     ON hotspot_alerts (sub_category);
 
+CREATE INDEX IF NOT EXISTS idx_master_tickets_recurrence_count
+    ON master_tickets (recurrence_count);
+
+CREATE INDEX IF NOT EXISTS idx_master_tickets_warranty_until
+    ON master_tickets (warranty_until);
+
 -- ============================================================
 -- 5. ROW LEVEL SECURITY (basic policies)
 -- ============================================================
@@ -227,6 +267,7 @@ ALTER TABLE hotspot_alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE citizens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE officers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ticket_events ENABLE ROW LEVEL SECURITY;
 
 -- Allow all authenticated users to read master tickets
 DROP POLICY IF EXISTS "Anyone can view master tickets" ON master_tickets;
@@ -580,9 +621,9 @@ BEGIN
     WITH clustered AS (
         SELECT
             mt.id, mt.category, mt.sub_category, mt.department, mt.lat, mt.lng, mt.location,
-            -- Partition by BOTH department and sub_category, and exclude unclassified tickets
+            -- Project into UTM Zone 43N (EPSG:32643) so units of eps are true ground meters without Mercator distortion
             ST_ClusterDBSCAN(
-                ST_Transform(mt.location::geometry, 3857),
+                ST_Transform(mt.location::geometry, 32643),
                 eps := eps_meters,
                 minpoints := min_pts
             ) OVER (PARTITION BY mt.department, mt.sub_category) AS cluster_id

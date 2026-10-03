@@ -13,44 +13,44 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
+  const handleQuickLogin = async (demoEmail, demoPassword) => {
+    setEmail(demoEmail)
+    setPassword(demoPassword)
     setError(null)
     setSubmitting(true)
-
     try {
-      const res = await login(email.trim(), password)
-      const userRole = res?.profile?.role || 'citizen'
-
-      // Strict role-specific home destinations
+      const res = await login(demoEmail, demoPassword)
+      const userRole = res?.profile?.role || (demoEmail.includes('officer') ? 'officer' : demoEmail.includes('admin') ? 'admin' : 'citizen')
       const roleHomeMap = {
         citizen: '/citizen/history',
         officer: '/officer/queue',
         admin: '/admin/dashboard',
       }
-
-      const defaultHome = roleHomeMap[userRole] || '/citizen/history'
-      const fromPath = location.state?.from?.pathname
-
-      // Only respect fromPath if it belongs to this user's role prefix
-      let destination = defaultHome
-      if (fromPath && fromPath !== '/login' && fromPath !== '/signup') {
-        if (userRole === 'officer' && fromPath.startsWith('/officer')) {
-          destination = fromPath
-        } else if (userRole === 'admin' && fromPath.startsWith('/admin')) {
-          destination = fromPath
-        } else if (userRole === 'citizen' && fromPath.startsWith('/citizen')) {
-          destination = fromPath
-        }
-      }
-
-      navigate(destination, { replace: true })
+      navigate(roleHomeMap[userRole] || '/citizen/history', { replace: true })
     } catch (err) {
-      setError(err.message || 'Invalid email or password')
+      setError(err.message || 'Quick login failed')
     } finally {
       setSubmitting(false)
     }
   }
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    handleQuickLogin(email.trim(), password)
+  }
+
+  // Handle URL query parameter ?demo=officer or ?demo=admin
+  useState(() => {
+    const params = new URLSearchParams(window.location.search)
+    const demo = params.get('demo')
+    if (demo === 'officer') {
+      setTimeout(() => handleQuickLogin('officer@pune.gov.in', 'Password@123'), 50)
+    } else if (demo === 'admin') {
+      setTimeout(() => handleQuickLogin('admin@pune.gov.in', 'Password@123'), 50)
+    } else if (demo === 'citizen') {
+      setTimeout(() => handleQuickLogin('citizen@pune.gov.in', 'Password@123'), 50)
+    }
+  })
 
   return (
     <div className="page-enter min-h-[80vh] flex items-center justify-center px-4 py-12">
@@ -127,15 +127,41 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Quick Credentials Info Box for testing */}
-        <div className="mt-6 p-4 rounded-xl bg-ivory-100 border border-ivory-200 text-xs text-charcoal-600 space-y-1.5">
-          <p className="font-bold text-charcoal-800 flex items-center gap-1.5">
-            <Shield className="w-3.5 h-3.5 text-civic-600" />
-            Configured Demo Accounts:
-          </p>
-          <p>• Officer: <code className="bg-amber-100/70 text-amber-900 px-1 py-0.5 rounded font-mono text-[11px]">officer@pune.gov.in</code> / <code className="text-charcoal-600 font-mono text-[11px]">Password@123</code></p>
-          <p>• Admin: <code className="bg-blue-100/70 text-blue-900 px-1 py-0.5 rounded font-mono text-[11px]">admin@pune.gov.in</code> / <code className="text-charcoal-600 font-mono text-[11px]">Password@123</code></p>
-          <p>• Citizen: <code className="bg-emerald-100/70 text-emerald-900 px-1 py-0.5 rounded font-mono text-[11px]">citizen@pune.gov.in</code> / <code className="text-charcoal-600 font-mono text-[11px]">Password@123</code></p>
+        {/* 1-Click Demo Accounts for testing / judges */}
+        <div className="mt-6 p-4 rounded-2xl bg-ivory-50 border border-ivory-200 text-xs text-charcoal-600 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-charcoal-800 flex items-center gap-1.5">
+              <Shield className="w-3.5 h-3.5 text-civic-600" />
+              1-Click Demo Sign In:
+            </span>
+            <span className="text-[10px] text-charcoal-400">Click to instantly log in</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => handleQuickLogin('citizen@pune.gov.in', 'Password@123')}
+              className="py-2 px-2.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold hover:bg-emerald-100 text-center transition-all shadow-2xs hover:scale-[1.02]"
+              title="Sign in as Citizen (Pooja Patil)"
+            >
+              👤 Citizen
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickLogin('officer@pune.gov.in', 'Password@123')}
+              className="py-2 px-2.5 rounded-xl bg-amber-50 text-amber-900 border border-amber-200 font-semibold hover:bg-amber-100 text-center transition-all shadow-2xs hover:scale-[1.02]"
+              title="Sign in as Field Officer (Ramesh Shinde - Roads)"
+            >
+              🛡️ Officer
+            </button>
+            <button
+              type="button"
+              onClick={() => handleQuickLogin('admin@pune.gov.in', 'Password@123')}
+              className="py-2 px-2.5 rounded-xl bg-blue-50 text-blue-900 border border-blue-200 font-semibold hover:bg-blue-100 text-center transition-all shadow-2xs hover:scale-[1.02]"
+              title="Sign in as Municipal Administrator (Commissioner)"
+            >
+              🏛️ Admin
+            </button>
+          </div>
         </div>
 
         {/* Footer Link */}

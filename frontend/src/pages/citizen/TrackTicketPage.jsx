@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { Search, Loader2, CheckCircle2, RotateCcw, Clock, MapPin, Users, ArrowLeft } from 'lucide-react'
+import { Search, Loader2, CheckCircle2, RotateCcw, Clock, MapPin, Users, ArrowLeft, ArrowRight, ShieldAlert } from 'lucide-react'
 import UrgencyBadge from '../../components/UrgencyBadge'
+import SlaBadge from '../../components/SlaBadge'
 import MapView from '../../components/MapView'
 import { API_BASE } from '../../supabaseClient'
 import useAuth from '../../hooks/useAuth'
@@ -18,6 +19,43 @@ export default function TrackTicketPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [responding, setResponding] = useState(false)
+  const [localRecentTickets, setLocalRecentTickets] = useState([])
+
+  // Community support / upvote state
+  const [hasSupported, setHasSupported] = useState(false)
+  const [supporting, setSupporting] = useState(false)
+  const [supportMessage, setSupportMessage] = useState(null)
+
+  // 3-Option citizen feedback state
+  const [feedbackComment, setFeedbackComment] = useState('')
+
+  // Load recently submitted tickets from localStorage
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('civicpulse_recent_tickets') || '[]')
+      if (stored.length > 0) {
+        Promise.all(
+          stored.slice(0, 5).map((id) =>
+            fetch(`${API_BASE}/api/tickets/${id}`)
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null)
+          )
+        ).then((res) => {
+          setLocalRecentTickets(res.filter(Boolean))
+        })
+      }
+    } catch (_) {}
+  }, [])
+
+  // Check if citizen already supported this ticket
+  useEffect(() => {
+    if (ticket?.id) {
+      try {
+        const supportedList = JSON.parse(localStorage.getItem('civicpulse_supported_tickets') || '[]')
+        setHasSupported(supportedList.includes(ticket.id))
+      } catch (_) {}
+    }
+  }, [ticket?.id])
 
   // Also show recent tickets via realtime
   const { data: recentTickets, loading: recentLoading } = useSupabaseRealtime('master_tickets')
@@ -53,17 +91,45 @@ export default function TrackTicketPage() {
     }
   }, [routeTicketId, session])
 
-  const handleCitizenResponse = async (response) => {
+  const handleSupport = async (isAffected) => {
+    if (!ticket || hasSupported) return
+    setSupporting(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/tickets/${ticket.id}/support`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          is_affected: isAffected,
+          voter_fingerprint: localStorage.getItem('civicpulse_device_id') || 'browser-' + Math.random().toString(36).slice(2),
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setSupportMessage(data.message)
+        setHasSupported(true)
+        const stored = JSON.parse(localStorage.getItem('civicpulse_supported_tickets') || '[]')
+        stored.push(ticket.id)
+        localStorage.setItem('civicpulse_supported_tickets', JSON.stringify(stored))
+        setTicket((prev) => ({ ...prev, upvote_count: data.upvote_count }))
+      }
+    } catch (err) {
+      console.error('Support error:', err)
+    } finally {
+      setSupporting(false)
+    }
+  }
+
+  const handleCitizenResponse = async (responseChoice) => {
     if (!ticket) return
     setResponding(true)
 
     try {
-      const res = await fetch(`${API_BASE}/api/verify/citizen-response`, {
+      const res = await fetch(`${API_BASE}/api/tickets/${ticket.id}/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          master_ticket_id: ticket.id,
-          response: response,
+          response: responseChoice,
+          comment: feedbackComment.trim() || undefined,
         }),
       })
 
@@ -71,6 +137,7 @@ export default function TrackTicketPage() {
       if (!res.ok) {
         throw new Error(data.detail || 'Failed to submit response')
       }
+      setFeedbackComment('')
       // Refresh ticket
       await searchTicket(ticket.id)
     } catch (err) {
@@ -141,11 +208,14 @@ export default function TrackTicketPage() {
       {/* Ticket Detail */}
       {ticket && (
         <div className="space-y-6 animate-slide-up">
-          {/* Status Timeline */}
+          {/* Status Timeline & Header */}
           <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6">
-            <div className="flex items-center gap-2.5 mb-5">
-              <UrgencyBadge urgency={ticket.urgency} size="md" />
-              <h2 className="text-lg font-bold text-charcoal-900">{ticket.category}</h2>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+              <div className="flex items-center gap-2.5">
+                <UrgencyBadge urgency={ticket.urgency} size="md" />
+                <h2 className="text-lg font-bold text-charcoal-900">{ticket.category}</h2>
+              </div>
+              <SlaBadge ticket={ticket} size="md" />
             </div>
 
             <div className="flex items-center gap-1 mb-6 overflow-x-auto pb-2">
@@ -173,19 +243,19 @@ export default function TrackTicketPage() {
             </div>
 
             {/* Ticket Info */}
-            <div className="grid grid-cols-2 gap-4 text-sm bg-ivory-50/70 p-4 rounded-xl border border-ivory-200">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm bg-ivory-50/70 p-4 rounded-xl border border-ivory-200">
               <div>
                 <span className="text-charcoal-400 text-xs block mb-0.5 font-medium">Department</span>
-                <p className="text-charcoal-900 font-semibold">{ticket.department || 'Pending'}</p>
+                <p className="text-charcoal-900 font-semibold truncate">{ticket.department || 'Pending'}</p>
               </div>
               <div>
-                <span className="text-charcoal-400 text-xs block mb-0.5 font-medium">Reports</span>
+                <span className="text-charcoal-400 text-xs block mb-0.5 font-medium">Citizen Reports</span>
                 <p className="text-charcoal-900 font-semibold flex items-center gap-1">
                   <Users className="w-3.5 h-3.5 text-civic-600" /> {ticket.upvote_count} citizen{ticket.upvote_count === 1 ? '' : 's'}
                 </p>
               </div>
               <div>
-                <span className="text-charcoal-400 text-xs block mb-0.5 font-medium">Created</span>
+                <span className="text-charcoal-400 text-xs block mb-0.5 font-medium">Reported On</span>
                 <p className="text-charcoal-900 font-semibold flex items-center gap-1">
                   <Clock className="w-3.5 h-3.5 text-charcoal-500" />
                   {ticket.created_at ? new Date(ticket.created_at).toLocaleDateString() : '-'}
@@ -193,8 +263,8 @@ export default function TrackTicketPage() {
               </div>
               <div>
                 <span className="text-charcoal-400 text-xs block mb-0.5 font-medium">Location</span>
-                <p className="text-charcoal-900 font-semibold flex items-center gap-1">
-                  <MapPin className="w-3.5 h-3.5 text-civic-600" />
+                <p className="text-charcoal-900 font-semibold flex items-center gap-1 truncate">
+                  <MapPin className="w-3.5 h-3.5 text-civic-600 flex-shrink-0" />
                   {ticket.address_text ? ticket.address_text : (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(4)}, ${ticket.lng.toFixed(4)}` : 'Location pending')}
                 </p>
               </div>
@@ -205,6 +275,60 @@ export default function TrackTicketPage() {
                 <span className="text-charcoal-500 text-xs uppercase tracking-wider font-bold">Description</span>
                 <p className="text-sm text-charcoal-700 mt-1 leading-relaxed">{ticket.description}</p>
               </div>
+            )}
+          </div>
+
+          {/* Community Support & Confirmation Widget */}
+          <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <span className="text-xs font-bold text-charcoal-700 uppercase tracking-wider flex items-center gap-1.5 mb-1">
+                  <Users className="w-4 h-4 text-civic-600" />
+                  Community Impact &amp; Confirmation
+                </span>
+                <h3 className="text-base font-bold text-charcoal-900">
+                  Is this problem affecting you too?
+                </h3>
+                <p className="text-xs text-charcoal-500 mt-0.5">
+                  Confirming this defect boosts municipal priority and merges reports without creating duplicate tickets.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="px-3 py-1.5 rounded-xl bg-ivory-100 text-charcoal-800 font-bold text-xs border border-ivory-300 flex items-center gap-1.5 whitespace-nowrap">
+                  👥 Affected citizens: <strong className="text-civic-700 font-mono text-sm">{ticket.upvote_count || 1}</strong>
+                </span>
+
+                {hasSupported ? (
+                  <span className="text-xs px-3 py-2 rounded-xl bg-emerald-50 text-emerald-800 font-bold border border-emerald-200 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Support Confirmed
+                  </span>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSupport(true)}
+                      disabled={supporting}
+                      className="btn-primary text-xs px-3.5 py-2 flex items-center gap-1.5 shadow-sm font-semibold whitespace-nowrap"
+                    >
+                      {supporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "👍 YES, I'M AFFECTED"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSupport(false)}
+                      disabled={supporting}
+                      className="btn-secondary text-xs px-3 py-2 text-charcoal-600 hover:text-charcoal-800 whitespace-nowrap"
+                    >
+                      NOT MY ISSUE
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            {supportMessage && (
+              <p className="text-xs font-semibold text-emerald-700 mt-3 animate-fade-in">
+                ✓ {supportMessage}
+              </p>
             )}
           </div>
 
@@ -262,35 +386,61 @@ export default function TrackTicketPage() {
             </div>
           )}
 
-          {/* Citizen Action — Verify or Reopen */}
+          {/* Citizen Action — 3-Option Feedback: YES / PARTIALLY / NO */}
           {ticket.status === 'RESOLVED_PENDING_CITIZEN' && (
             <div className="bg-gradient-to-br from-emerald-50/90 via-white to-ivory-100 rounded-2xl border border-emerald-300 shadow-card p-6 animate-slide-up">
               <div className="flex items-center gap-3 mb-2">
                 <span className="text-2xl">🎉</span>
                 <div>
                   <h3 className="font-bold text-charcoal-900 text-base">Issue Marked as Resolved</h3>
-                  <p className="text-xs text-emerald-700 font-medium">Action Required: Verify the work on site</p>
+                  <p className="text-xs text-emerald-700 font-medium">Was this issue actually resolved to your satisfaction?</p>
                 </div>
               </div>
-              <p className="text-sm text-charcoal-600 mb-5 leading-relaxed">
-                The municipal field officer has submitted photographic proof of work. Please review the photo evidence above and confirm if the issue has been resolved to your satisfaction.
+              <p className="text-xs text-charcoal-600 mb-4 leading-relaxed">
+                The municipal field officer has submitted photographic proof of work. Please review the photo evidence above and submit your confirmation.
               </p>
-              <div className="flex gap-3">
+
+              {/* Feedback comment input */}
+              <div className="mb-4">
+                <label className="text-[11px] font-bold text-charcoal-600 uppercase tracking-wide block mb-1">
+                  Citizen Feedback Comment (Optional)
+                </label>
+                <textarea
+                  value={feedbackComment}
+                  onChange={(e) => setFeedbackComment(e.target.value)}
+                  placeholder="Share details on the repair quality (e.g. 'Pothole filled smoothly' or 'Debris left behind on sidewalk')..."
+                  rows={2}
+                  className="w-full bg-white border border-ivory-300 rounded-xl p-3 text-xs text-charcoal-900 placeholder:text-charcoal-400 focus:outline-none focus:border-civic-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <button
-                  onClick={() => handleCitizenResponse('verified')}
+                  type="button"
+                  onClick={() => handleCitizenResponse('YES')}
                   disabled={responding}
-                  className="btn-primary flex-1 shadow-sm py-2.5"
+                  className="btn-primary py-2.5 text-xs shadow-sm flex items-center justify-center gap-1.5"
                 >
                   <CheckCircle2 className="w-4 h-4 text-white" />
-                  {responding ? 'Submitting...' : 'Looks Good — Close Ticket'}
+                  {responding ? 'Submitting...' : 'YES — Fully Resolved'}
                 </button>
                 <button
-                  onClick={() => handleCitizenResponse('reopen')}
+                  type="button"
+                  onClick={() => handleCitizenResponse('PARTIALLY')}
                   disabled={responding}
-                  className="btn-danger flex-1 py-2.5"
+                  className="btn-secondary py-2.5 text-xs flex items-center justify-center gap-1.5 border-amber-300 text-amber-900 bg-amber-50 hover:bg-amber-100"
+                >
+                  <Clock className="w-4 h-4 text-amber-700" />
+                  {responding ? 'Submitting...' : 'PARTIALLY Resolved'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCitizenResponse('NO')}
+                  disabled={responding}
+                  className="btn-danger py-2.5 text-xs flex items-center justify-center gap-1.5"
                 >
                   <RotateCcw className="w-4 h-4" />
-                  {responding ? 'Submitting...' : 'Not Fixed — Reopen Issue'}
+                  {responding ? 'Submitting...' : 'NO — Not Fixed (Reopen)'}
                 </button>
               </div>
             </div>
@@ -331,6 +481,38 @@ export default function TrackTicketPage() {
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Your Submitted Tickets */}
+      {!ticket && localRecentTickets.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-2 h-2 rounded-full bg-civic-500" />
+            <h2 className="text-sm font-bold text-charcoal-900 uppercase tracking-wider">
+              Your Recently Submitted Tickets
+            </h2>
+          </div>
+          <div className="space-y-2.5">
+            {localRecentTickets.map((t) => (
+              <div
+                key={t.id}
+                onClick={() => { setSearchId(t.id); searchTicket(t.id); }}
+                className="bg-civic-50/50 hover:bg-civic-50 border border-civic-200 rounded-xl p-4 transition-all cursor-pointer flex items-center justify-between shadow-sm group"
+              >
+                <div className="flex items-center gap-3">
+                  <UrgencyBadge urgency={t.urgency} size="sm" />
+                  <div>
+                    <span className="text-sm font-semibold text-charcoal-900 block">{t.category}</span>
+                    <span className="text-xs text-charcoal-500 line-clamp-1 max-w-[320px]">{t.description || t.address_text}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-civic-700 font-semibold group-hover:translate-x-0.5 transition-transform">
+                  Track Status <ArrowRight className="w-4 h-4" />
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

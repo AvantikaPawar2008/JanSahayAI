@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Loader2, CheckCircle2, AlertTriangle, Upload, MapPin,
-  RefreshCw, RotateCcw, Camera, Info, ShieldCheck, ShieldX, Clock
+  RefreshCw, RotateCcw, Camera, Info, ShieldCheck, ShieldX, Clock, User
 } from 'lucide-react'
 import SOPStepsList from '../../components/SOPStepsList'
 import PhotoCapture from '../../components/PhotoCapture'
@@ -56,6 +56,86 @@ export default function TicketDetailPage() {
   // Verification
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState(null)
+  const [deviceTilt, setDeviceTilt] = useState(null)
+  const [deviceHeading, setDeviceHeading] = useState(null)
+
+  // Demo Geofence Simulation Mode (for hackathon indoor presentations)
+  const [gpsSimMode, setGpsSimMode] = useState('real') // 'real' | 'onsite_demo' | 'offsite_demo'
+
+  // Officer Allotment State
+  const [officersList, setOfficersList] = useState([])
+  const [selectedOfficerId, setSelectedOfficerId] = useState('')
+  const [allotting, setAllotting] = useState(false)
+  const [allotMsg, setAllotMsg] = useState(null)
+
+  const fetchDepartmentOfficers = async (dept) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/officer/list?department=${encodeURIComponent(dept || '')}`)
+      if (res.ok) {
+        const offList = await res.json()
+        setOfficersList(offList)
+      }
+    } catch (e) {
+      console.error('Failed to load officers:', e)
+    }
+  }
+
+  const handleAllotTicket = async () => {
+    if (!selectedOfficerId) return
+    setAllotting(true)
+    setAllotMsg(null)
+    try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`
+      const res = await fetch(`${API_BASE}/api/officer/allot`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          ticket_id: ticketId,
+          officer_id: selectedOfficerId,
+        }),
+      })
+      const resp = await res.json()
+      if (res.ok) {
+        setAllotMsg(resp.message || 'Allotted successfully!')
+        await fetchTicketDetail(session?.access_token)
+      } else {
+        setAllotMsg(`Failed: ${resp.detail || 'Error'}`)
+      }
+    } catch (err) {
+      setAllotMsg(`Error: ${err.message}`)
+    } finally {
+      setAllotting(false)
+      setTimeout(() => setAllotMsg(null), 5000)
+    }
+  }
+
+  const effectiveLat = gpsSimMode === 'onsite_demo'
+    ? (data?.ticket?.lat ? data.ticket.lat + 0.0002 : 18.5204)  // ~25m away (passes 150m geofence)
+    : gpsSimMode === 'offsite_demo'
+    ? (data?.ticket?.lat ? data.ticket.lat + 0.006 : 18.56)      // ~660m away (breaches 150m geofence)
+    : (lat || data?.ticket?.lat)
+
+  const effectiveLng = gpsSimMode === 'onsite_demo'
+    ? (data?.ticket?.lng ? data.ticket.lng + 0.0002 : 73.8567)
+    : gpsSimMode === 'offsite_demo'
+    ? (data?.ticket?.lng ? data.ticket.lng + 0.006 : 73.89)
+    : (lng || data?.ticket?.lng)
+
+  useEffect(() => {
+    const handleOrientation = (e) => {
+      if (e.beta !== null && e.beta !== undefined) setDeviceTilt(Math.round(e.beta))
+      if (e.alpha !== null && e.alpha !== undefined) setDeviceHeading(Math.round(e.alpha))
+    }
+    if (window.DeviceOrientationEvent) {
+      window.addEventListener('deviceorientation', handleOrientation, true)
+    }
+    return () => {
+      if (window.DeviceOrientationEvent) {
+        window.removeEventListener('deviceorientation', handleOrientation)
+      }
+    }
+  }, [])
 
   // Officer self-correction reopen
   const [reopenReason, setReopenReason] = useState('')
@@ -74,6 +154,12 @@ export default function TicketDetailPage() {
       if (!response.ok) throw new Error(`Failed to load ticket (${response.status})`)
       const result = await response.json()
       setData(result)
+      if (result?.ticket?.assigned_officer_id) {
+        setSelectedOfficerId(result.ticket.assigned_officer_id)
+      }
+      if (result?.ticket?.department) {
+        fetchDepartmentOfficers(result.ticket.department)
+      }
       // Reset verification state when ticket data refreshes
       // (if the ticket is back to IN_PROGRESS after a reopen, clear stale result)
       if (result?.ticket?.status === 'IN_PROGRESS') {
@@ -102,8 +188,8 @@ export default function TicketDetailPage() {
 
   /** Upload officer after photo to /api/officer/submit-proof */
   const uploadAfterPhoto = async (photoFile) => {
-    const uploadLat = lat || data?.ticket?.lat
-    const uploadLng = lng || data?.ticket?.lng
+    const uploadLat = effectiveLat || lat || data?.ticket?.lat
+    const uploadLng = effectiveLng || lng || data?.ticket?.lng
 
     if (!uploadLat || !uploadLng) {
       alert('GPS location is required for photo submission. Please enable location services.')
@@ -154,7 +240,13 @@ export default function TicketDetailPage() {
       const response = await fetch(`${API_BASE}/api/verify/photo`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ master_ticket_id: ticketId }),
+        body: JSON.stringify({
+          master_ticket_id: ticketId,
+          officer_id: session?.user?.id || null,
+          device_tilt: deviceTilt,
+          device_heading: deviceHeading,
+          is_mock_location: accuracy === 0, // Mock providers frequently report exactly 0m accuracy
+        }),
       })
 
       const result = await response.json()
@@ -334,6 +426,55 @@ export default function TicketDetailPage() {
           </div>
         </div>
 
+        {/* Officer Allotment Card */}
+        <div className="p-3.5 rounded-xl bg-white border border-ivory-300 mb-4 shadow-2xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold text-charcoal-400 uppercase tracking-wide flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-civic-600" /> Allotted Field Officer
+              </p>
+              <p className="text-sm font-bold text-charcoal-900 mt-0.5">
+                {officersList.find((o) => o.id === ticket.assigned_officer_id)?.name || (ticket.assigned_officer_id ? 'Assigned Field Officer' : '⚠️ Unallotted Ticket')}
+              </p>
+              {ticket.assigned_officer_id && (
+                <p className="text-xs text-charcoal-500">
+                  {officersList.find((o) => o.id === ticket.assigned_officer_id)?.phone_number || 'Official Contact on file'}
+                </p>
+              )}
+            </div>
+
+            {/* Re-allotment Form */}
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedOfficerId}
+                onChange={(e) => setSelectedOfficerId(e.target.value)}
+                className="input text-xs py-1.5 min-w-[180px]"
+              >
+                <option value="">Select Officer to Allot...</option>
+                {officersList.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name} ({o.current_pending_count ?? 0} pending)
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleAllotTicket}
+                disabled={allotting || !selectedOfficerId || selectedOfficerId === ticket.assigned_officer_id}
+                className="btn btn-primary text-xs whitespace-nowrap"
+              >
+                {allotting ? 'Allotting...' : 'Re-allot'}
+              </button>
+            </div>
+          </div>
+
+          {allotMsg && (
+            <p className="text-xs text-civic-700 font-medium mt-2 bg-civic-50 p-2 rounded-lg border border-civic-100">
+              {allotMsg}
+            </p>
+          )}
+        </div>
+
         <GpsBadge lat={lat} lng={lng} accuracy={accuracy} loading={gpsLoading} error={gpsError} onRefresh={refreshGps} />
       </div>
 
@@ -510,6 +651,59 @@ export default function TicketDetailPage() {
             ───────────────────────────────────────────────────── */}
         {!hasAfterPhoto && !isAwaitingCitizenConfirmation && !(verifyResult && !verifyResult.overall_passed) && (
           <div>
+            {/* Geofence Demo Mode Selector */}
+            <div className="mb-4 p-3 rounded-xl bg-ivory-100 border border-ivory-300 text-xs">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold text-charcoal-700 flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-civic-600" />
+                  Officer GPS Location (150m Geofence Enforced)
+                </span>
+                <span className="text-[10px] bg-civic-100 text-civic-800 px-2 py-0.5 rounded font-mono font-bold">
+                  {gpsSimMode === 'real' ? 'LIVE GPS' : 'DEMO MODE'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setGpsSimMode('real')}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                    gpsSimMode === 'real'
+                      ? 'bg-civic-600 text-white shadow-sm'
+                      : 'bg-white border border-charcoal-200 text-charcoal-600 hover:bg-ivory-200'
+                  }`}
+                >
+                  Real Device GPS
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGpsSimMode('onsite_demo')}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                    gpsSimMode === 'onsite_demo'
+                      ? 'bg-civic-600 text-white shadow-sm'
+                      : 'bg-white border border-charcoal-200 text-charcoal-600 hover:bg-ivory-200'
+                  }`}
+                >
+                  🟢 On-Site (25m - Demo Pass)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGpsSimMode('offsite_demo')}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                    gpsSimMode === 'offsite_demo'
+                      ? 'bg-coral-600 text-white shadow-sm'
+                      : 'bg-white border border-charcoal-200 text-charcoal-600 hover:bg-ivory-200'
+                  }`}
+                >
+                  🔴 Off-Site (660m - Demo Reject)
+                </button>
+              </div>
+              <p className="text-[11px] text-charcoal-400 mt-2">
+                {gpsSimMode === 'real' && 'Using browser navigator.geolocation.'}
+                {gpsSimMode === 'onsite_demo' && 'Simulating officer standing 25 meters from complaint site (within 150m geofence).'}
+                {gpsSimMode === 'offsite_demo' && 'Simulating officer standing 660 meters away (violates 150m geofence).'}
+              </p>
+            </div>
+
             <p className="text-xs font-semibold text-charcoal-600 mb-2 flex items-center gap-1.5">
               <Camera className="w-4 h-4" /> 📸 After Work Photo (required)
             </p>

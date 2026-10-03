@@ -25,6 +25,84 @@ URGENCY_WEIGHTS = {
     "CRITICAL": 10.0,
 }
 
+# Municipal SLA Targets by Urgency Level (in hours)
+SLA_TARGET_HOURS: Dict[str, float] = {
+    "CRITICAL": 12.0,  # Safety hazards, gas leaks, road collapse, severe flooding
+    "HIGH": 24.0,      # Major potholes, sewage overflow, active water main burst
+    "MEDIUM": 48.0,    # Streetlight outage, missed waste collection, blocked drains
+    "LOW": 72.0,       # Cosmetic issues, damaged non-critical street signs
+}
+
+
+def compute_ticket_sla(
+    created_at: datetime | str,
+    urgency: str = "MEDIUM",
+    status: str = "OPEN",
+    resolved_at: Optional[datetime | str] = None,
+) -> Dict[str, Any]:
+    """
+    Computes real-time SLA metrics:
+      - sla_target_hours: float (12, 24, 48, 72)
+      - sla_elapsed_hours: float
+      - sla_remaining_hours: float (>= 0.0)
+      - sla_status: 'WITHIN_SLA' | 'NEAR_DEADLINE' | 'BREACHED'
+      - sla_progress_percent: float (0 to 100+)
+      - is_escalated: bool (breached while unresolved)
+      - escalation_level: Optional[str] ('LEVEL_1_SUPERVISOR' | 'LEVEL_2_HOD' | None)
+    """
+    now = datetime.now(timezone.utc)
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except Exception:
+            created_at = now
+    elif created_at and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    elif not created_at:
+        created_at = now
+
+    target_hours = SLA_TARGET_HOURS.get(str(urgency).upper(), 48.0)
+
+    # Resolution timing
+    is_terminal = str(status).upper() in ("RESOLVED", "CLOSED")
+    if is_terminal and resolved_at:
+        if isinstance(resolved_at, str):
+            try:
+                resolved_dt = datetime.fromisoformat(resolved_at.replace("Z", "+00:00"))
+            except Exception:
+                resolved_dt = now
+        else:
+            resolved_dt = resolved_at
+        elapsed_hours = max(0.0, (resolved_dt - created_at).total_seconds() / 3600.0)
+    else:
+        elapsed_hours = max(0.0, (now - created_at).total_seconds() / 3600.0)
+
+    remaining_hours = max(0.0, target_hours - elapsed_hours)
+    progress_percent = round(min(200.0, (elapsed_hours / target_hours) * 100.0), 1)
+
+    if elapsed_hours > target_hours:
+        sla_status = "BREACHED"
+        is_escalated = not is_terminal
+        escalation_level = "LEVEL_2_HOD" if elapsed_hours >= (target_hours * 1.5) else "LEVEL_1_SUPERVISOR"
+    elif remaining_hours <= 4.0 or progress_percent >= 75.0:
+        sla_status = "NEAR_DEADLINE"
+        is_escalated = False
+        escalation_level = None
+    else:
+        sla_status = "WITHIN_SLA"
+        is_escalated = False
+        escalation_level = None
+
+    return {
+        "sla_target_hours": target_hours,
+        "sla_elapsed_hours": round(elapsed_hours, 1),
+        "sla_remaining_hours": round(remaining_hours, 1),
+        "sla_status": sla_status,
+        "sla_progress_percent": progress_percent,
+        "is_escalated": is_escalated,
+        "escalation_level": escalation_level,
+    }
+
 
 def compute_priority_components(
     created_at: datetime | str,
@@ -117,19 +195,20 @@ def batch_recalculate_priorities(limit: int = 200) -> int:
         .execute()
     )
 
-    updates = []
+    updated_count = 0
     for t in (res.data or []):
-        comps = compute_priority_components(
-            created_at=t["created_at"],
-            urgency=t.get("urgency", "MEDIUM"),
-            duplicate_count=t.get("upvote_count", 1),
-        )
-        updates.append({"id": t["id"], **comps})
+        try:
+            comps = compute_priority_components(
+                created_at=t["created_at"],
+                urgency=t.get("urgency", "MEDIUM"),
+                duplicate_count=t.get("upvote_count", 1),
+            )
+            supabase.table("master_tickets").update(comps).eq("id", t["id"]).execute()
+            updated_count += 1
+        except Exception:
+            continue
 
-    if updates:
-        supabase.table("master_tickets").upsert(updates).execute()
-
-    return len(updates)
+    return updated_count
 
 
 def recalculate_department_priorities(department: Optional[str] = None, limit: int = 50) -> int:
@@ -148,20 +227,20 @@ def recalculate_department_priorities(department: Optional[str] = None, limit: i
             query = query.eq("department", department)
             
         res = query.limit(limit).execute()
-        # Batch all updates into a single upsert to avoid N individual DB round-trips
-        updates = []
+        updated_count = 0
         for t in (res.data or []):
-            comps = compute_priority_components(
-                created_at=t["created_at"],
-                urgency=t.get("urgency", "MEDIUM"),
-                duplicate_count=t.get("upvote_count", 1),
-            )
-            updates.append({"id": t["id"], **comps})
+            try:
+                comps = compute_priority_components(
+                    created_at=t["created_at"],
+                    urgency=t.get("urgency", "MEDIUM"),
+                    duplicate_count=t.get("upvote_count", 1),
+                )
+                supabase.table("master_tickets").update(comps).eq("id", t["id"]).execute()
+                updated_count += 1
+            except Exception:
+                continue
 
-        if updates:
-            supabase.table("master_tickets").upsert(updates).execute()
-
-        return len(updates)
+        return updated_count
     except Exception as e:
         logger.warning(f"On-demand priority recalculation skipped: {e}")
         return 0

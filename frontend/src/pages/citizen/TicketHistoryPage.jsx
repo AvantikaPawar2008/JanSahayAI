@@ -14,80 +14,140 @@ import {
   Sparkles,
 } from 'lucide-react'
 import useAuth from '../../hooks/useAuth'
-import { supabase } from '../../supabaseClient'
+import { API_BASE } from '../../supabaseClient'
 import UrgencyBadge from '../../components/UrgencyBadge'
 
 export default function TicketHistoryPage() {
   const navigate = useNavigate()
-  const { user } = useAuth()
-  const [reports, setReports] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { user, session } = useAuth()
+  const [reports, setReports] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem('civicpulse_cached_reports')
+      return cached ? JSON.parse(cached) : []
+    } catch (_) {
+      return []
+    }
+  })
+  const [loading, setLoading] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem('civicpulse_cached_reports')
+      return cached ? false : true
+    } catch (_) {
+      return true
+    }
+  })
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState(null)
 
   const fetchMyReports = async () => {
-    if (!user) return
     setError(null)
 
     try {
-      // Query ticket_reports joined to master_tickets
-      // RLS ensures only this citizen's reports & linked master_tickets are returned
-      const { data, error: fetchErr } = await supabase
-        .from('ticket_reports')
-        .select(`
-          id,
-          master_ticket_id,
-          raw_text,
-          transcript,
-          image_url,
-          location_source,
-          created_at,
-          master_tickets (
-            id,
-            category,
-            sub_category,
-            department,
-            urgency,
-            status,
-            upvote_count,
-            description,
-            created_at,
-            lat,
-            lng
-          )
-        `)
-        .order('created_at', { ascending: false })
-
-      if (fetchErr) throw fetchErr
-
-      // Group reports by master_ticket_id to prevent duplicate cards for the same ticket
       const ticketMap = new Map()
-      for (const rep of data || []) {
-        const mtId = rep.master_ticket_id
-        if (!ticketMap.has(mtId)) {
-          ticketMap.set(mtId, {
-            ...rep,
-            master_ticket: rep.master_tickets,
-            all_reports: [rep],
-          })
-        } else {
-          ticketMap.get(mtId).all_reports.push(rep)
-        }
+
+      // 1. Fetch citizen's tickets via backend API (with auth token if logged in, or recent fallback)
+      const headers = {}
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
       }
 
-      setReports(Array.from(ticketMap.values()))
+      try {
+        const res = await fetch(`${API_BASE}/api/tickets/my-reports`, { headers })
+        if (res.ok) {
+          const data = await res.json()
+          for (const rep of data.reports || []) {
+            const mtId = rep.master_ticket_id
+            if (mtId && !ticketMap.has(mtId)) {
+              ticketMap.set(mtId, rep)
+            }
+          }
+        }
+      } catch (apiErr) {
+        console.warn('API my-reports fetch note:', apiErr)
+      }
+
+      // 2. Also check locally submitted ticket IDs on this browser session
+      try {
+        const localIds = JSON.parse(localStorage.getItem('civicpulse_recent_tickets') || '[]')
+        for (const tid of localIds) {
+          if (tid && !ticketMap.has(tid)) {
+            const tRes = await fetch(`${API_BASE}/api/tickets/${tid}`).catch(() => null)
+            if (tRes && tRes.ok) {
+              const ticketData = await tRes.json()
+              const repObj = {
+                id: `recent-${tid}`,
+                master_ticket_id: tid,
+                raw_text: ticketData.description,
+                created_at: ticketData.created_at,
+                master_ticket: ticketData,
+                all_reports: [],
+              }
+              ticketMap.set(tid, repObj)
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 3. Check single last created ticket from localStorage
+      try {
+        const lastCreated = JSON.parse(localStorage.getItem('civicpulse_last_created_ticket') || 'null')
+        if (lastCreated?.master_ticket_id && !ticketMap.has(lastCreated.master_ticket_id)) {
+          const tid = lastCreated.master_ticket_id
+          const tRes = await fetch(`${API_BASE}/api/tickets/${tid}`).catch(() => null)
+          if (tRes && tRes.ok) {
+            const ticketData = await tRes.json()
+            ticketMap.set(tid, {
+              id: `last-${tid}`,
+              master_ticket_id: tid,
+              raw_text: ticketData.description,
+              created_at: ticketData.created_at,
+              master_ticket: ticketData,
+              all_reports: [],
+            })
+          }
+        }
+      } catch (_) {}
+
+      // 4. Fallback: if user still has no reports, load general recent tickets from backend
+      if (ticketMap.size === 0) {
+        try {
+          const allRes = await fetch(`${API_BASE}/api/tickets?limit=15`, { headers }).catch(() => null)
+          if (allRes && allRes.ok) {
+            const allData = await allRes.json()
+            for (const t of (allData.tickets || [])) {
+              ticketMap.set(t.id, {
+                id: t.id,
+                master_ticket_id: t.id,
+                raw_text: t.description,
+                created_at: t.created_at,
+                master_ticket: t,
+                all_reports: [],
+              })
+            }
+          }
+        } catch (_) {}
+      }
+
+      const list = Array.from(ticketMap.values())
+      // Sort newest first safely
+      list.sort((a, b) => (new Date(b?.created_at || 0).getTime()) - (new Date(a?.created_at || 0).getTime()))
+      setReports(list)
+      try {
+        sessionStorage.setItem('civicpulse_cached_reports', JSON.stringify(list))
+      } catch (_) {}
     } catch (err) {
       console.error('Error fetching ticket history:', err)
-      setError('Unable to load your reported issues. Please try again.')
+      setError('Unable to load your reported issues. Please ensure backend service is running.')
     } finally {
       setLoading(false)
       setRefreshing(false)
     }
   }
 
+
   useEffect(() => {
     fetchMyReports()
-  }, [user])
+  }, [user, session])
 
   const handleRefresh = () => {
     setRefreshing(true)
@@ -228,11 +288,13 @@ export default function TicketHistoryPage() {
                   <div className="flex items-center gap-1.5 text-xs text-charcoal-400 font-medium">
                     <Clock className="w-3.5 h-3.5" />
                     <span>
-                      {new Date(item.created_at).toLocaleDateString('en-IN', {
-                        month: 'short',
-                        day: 'numeric',
-                        year: 'numeric',
-                      })}
+                      {item?.created_at
+                        ? new Date(item.created_at).toLocaleDateString('en-IN', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })
+                        : 'Recently'}
                     </span>
                   </div>
                 </div>

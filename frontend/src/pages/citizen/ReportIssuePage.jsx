@@ -1,14 +1,16 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
-import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import {
   Send, Loader2, CheckCircle2, AlertCircle, Mic, Camera,
-  FileText, MapPin, Navigation, Search, X, ToggleLeft, ToggleRight,
+  FileText, MapPin, Navigation, Search, X, ExternalLink, ArrowRight, Clock,
 } from 'lucide-react'
 import VoiceRecorderButton from '../../components/VoiceRecorderButton'
 import PhotoCapture from '../../components/PhotoCapture'
 import GpsBadge from '../../components/GpsBadge'
 import UrgencyBadge from '../../components/UrgencyBadge'
+import ErrorBoundary from '../../components/ErrorBoundary'
 import useGeolocation from '../../hooks/useGeolocation'
 import { useAuth } from '../../context/AuthContext'
 import { API_BASE } from '../../supabaseClient'
@@ -21,18 +23,41 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
 })
 
+// Pan map when center coordinates update without tearing down the Leaflet instance
+function MapCenterUpdater({ center }) {
+  const map = useMap()
+  const lat = center?.[0]
+  const lng = center?.[1]
+  const lastCenter = useRef(null)
+
+  useEffect(() => {
+    if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+      if (!lastCenter.current || Math.abs(lastCenter.current[0] - lat) > 0.0001 || Math.abs(lastCenter.current[1] - lng) > 0.0001) {
+        lastCenter.current = [lat, lng]
+        try {
+          map.panTo([lat, lng], { animate: true, duration: 0.4 })
+        } catch (_) {}
+      }
+    }
+  }, [lat, lng, map])
+  return null
+}
+
 // Draggable pin component — updates parent lat/lng on drag end
 function DraggablePin({ position, onDragEnd }) {
   const markerRef = useRef(null)
-  const eventHandlers = {
-    dragend() {
-      const marker = markerRef.current
-      if (marker) {
-        const { lat, lng } = marker.getLatLng()
-        onDragEnd(lat, lng)
-      }
-    },
-  }
+  const eventHandlers = useMemo(
+    () => ({
+      dragend() {
+        const marker = markerRef.current
+        if (marker) {
+          const { lat, lng } = marker.getLatLng()
+          onDragEnd(lat, lng)
+        }
+      },
+    }),
+    [onDragEnd],
+  )
   return (
     <Marker
       draggable={true}
@@ -70,6 +95,7 @@ async function geocodeAddress(query) {
  * - Location can be live GPS or manually set via address search / pin drag
  */
 export default function ReportIssuePage() {
+  const navigate = useNavigate()
   const DEFAULT_CITY_COORDS = [18.5204, 73.8567] // Pune city center fallback
   const { lat: gpsLat, lng: gpsLng, accuracy, loading: gpsLoading, error: gpsError, refresh: refreshGps } = useGeolocation()
 
@@ -109,12 +135,22 @@ export default function ReportIssuePage() {
   const [imageFile, setImageFile] = useState(null)
   const [phone, setPhone] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [result, setResult] = useState(null)
+  const [result, setResult] = useState(() => {
+    try {
+      const saved = localStorage.getItem('civicpulse_last_created_ticket')
+      return saved ? JSON.parse(saved) : null
+    } catch (_) {
+      return null
+    }
+  })
   const [error, setError] = useState(null)
+  const [recentTickets, setRecentTickets] = useState([])
+  const [loadingRecent, setLoadingRecent] = useState(false)
 
   // Track which optional input panels are open (text always open now)
   const [showVoice, setShowVoice] = useState(false)
   const [showPhoto, setShowPhoto] = useState(false)
+
 
   // Submitted coordinates are ALWAYS the pin's current position
   const finalLat = pinLat
@@ -159,6 +195,47 @@ export default function ReportIssuePage() {
         setAddressSearching(false)
       }
     }, 800)
+  }
+
+  const loadRecentTickets = useCallback(async () => {
+    try {
+      const localIds = JSON.parse(localStorage.getItem('civicpulse_recent_tickets') || '[]')
+      if (localIds.length === 0) return
+      setLoadingRecent(true)
+      const fetched = []
+      for (const id of localIds.slice(0, 5)) {
+        try {
+          const res = await fetch(`${API_BASE}/api/tickets/${id}`)
+          if (res.ok) {
+            const data = await res.json()
+            fetched.push(data)
+          }
+        } catch (_) {}
+      }
+      setRecentTickets(fetched)
+    } catch (_) {} finally {
+      setLoadingRecent(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadRecentTickets()
+  }, [loadRecentTickets])
+
+  const handleReportAnother = () => {
+    try {
+      localStorage.removeItem('civicpulse_last_created_ticket')
+    } catch (_) {}
+    setResult(null)
+    setError(null)
+    setText('')
+    setAudioBlob(null)
+    setImageFile(null)
+    setAddressQuery('')
+    const formEl = document.getElementById('report-issue-form')
+    if (formEl) {
+      formEl.scrollIntoView({ behavior: 'smooth' })
+    }
   }
 
   const handleSubmit = useCallback(async (e) => {
@@ -215,6 +292,25 @@ export default function ReportIssuePage() {
       const data = await response.json()
       setResult(data)
 
+      // Persist ticket locally so citizen can track or view immediately, and persists on page refresh
+      try {
+        localStorage.setItem('civicpulse_last_created_ticket', JSON.stringify(data))
+        sessionStorage.removeItem('civicpulse_cached_reports')
+      } catch (_) {}
+
+      if (data?.master_ticket_id) {
+        try {
+          const stored = JSON.parse(localStorage.getItem('civicpulse_recent_tickets') || '[]')
+          if (!stored.includes(data.master_ticket_id)) {
+            stored.unshift(data.master_ticket_id)
+            localStorage.setItem('civicpulse_recent_tickets', JSON.stringify(stored.slice(0, 30)))
+          }
+        } catch (_) {}
+      }
+
+      // Reload recent tickets list
+      loadRecentTickets()
+
       // Reset form on success
       setText('')
       setAudioBlob(null)
@@ -225,7 +321,8 @@ export default function ReportIssuePage() {
     } finally {
       setSubmitting(false)
     }
-  }, [finalLat, finalLng, text, audioBlob, imageFile, phone, locationSource, gpsLat, gpsLng, addressQuery])
+  }, [finalLat, finalLng, text, audioBlob, imageFile, phone, locationSource, gpsLat, gpsLng, addressQuery, session?.access_token, loadRecentTickets])
+
 
   const mapCenter = (finalLat && finalLng) ? [finalLat, finalLng] : [18.52, 73.86]
 
@@ -244,201 +341,197 @@ export default function ReportIssuePage() {
 
       {/* Success State */}
       {result && (
-        <div className="bg-white rounded-2xl border border-civic-300 shadow-card p-6 mb-6 animate-slide-up">
+        <div className="bg-white rounded-2xl border border-emerald-300 shadow-card p-6 mb-6 animate-slide-up">
           <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-xl bg-civic-50 border border-civic-200 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <CheckCircle2 className="w-6 h-6 text-civic-700" />
+            <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <CheckCircle2 className="w-7 h-7 text-emerald-600" />
             </div>
             <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Saved to Database
+                </span>
+                <span className="text-xs text-charcoal-400 font-mono">
+                  ID: {result.master_ticket_id?.slice(0, 8)}...
+                </span>
+              </div>
               <h3 className="font-bold text-charcoal-900 text-lg mb-1">
-                {result.is_duplicate ? 'Report Added to Existing Ticket' : 'New Ticket Created'}
+                {result.is_duplicate ? 'Report Added to Existing Master Ticket' : 'New Master Ticket Successfully Created'}
               </h3>
               <p className="text-sm text-charcoal-600 mb-4 leading-relaxed">{result.message}</p>
-              <div className="flex flex-wrap gap-2 mb-3">
-                {result.urgency && <UrgencyBadge urgency={result.urgency} />}
-                {result.department && (
-                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-civic-50 text-civic-800 border border-civic-200 font-medium">
-                    {result.department}
+              
+              {/* Structured Submission Summary: ID, Category, Urgency, Location, Status, SLA */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 p-4 bg-ivory-50 rounded-xl border border-ivory-200 mb-4 text-xs">
+                <div>
+                  <span className="text-charcoal-400 block font-medium">Ticket ID</span>
+                  <span className="font-mono font-bold text-charcoal-900 select-all">{result.master_ticket_id?.slice(0, 8)}...</span>
+                </div>
+                <div>
+                  <span className="text-charcoal-400 block font-medium">Category</span>
+                  <span className="font-semibold text-charcoal-900">{result.category || 'Civic Defect'}</span>
+                  {result.sub_category && <span className="text-[10px] text-charcoal-500 block">({result.sub_category})</span>}
+                </div>
+                <div>
+                  <span className="text-charcoal-400 block font-medium">Detected Urgency</span>
+                  <span className="inline-block mt-0.5">
+                    {result.urgency && <UrgencyBadge urgency={result.urgency} size="sm" />}
                   </span>
-                )}
-                {result.category && (
-                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-ivory-100 text-charcoal-700 border border-ivory-300 font-medium">
-                    {result.category}
+                </div>
+                <div>
+                  <span className="text-charcoal-400 block font-medium">Current Status</span>
+                  <span className="inline-flex items-center gap-1 font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full text-[10px] mt-0.5">
+                    {result.status || 'OPEN'}
                   </span>
-                )}
-                {result.sub_category && (
-                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-ivory-100 text-charcoal-500 border border-ivory-300 font-mono text-[11px]">
-                    {result.sub_category}
+                </div>
+                <div>
+                  <span className="text-charcoal-400 block font-medium">Expected SLA</span>
+                  <span className="font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full text-[10px] inline-flex items-center gap-1 mt-0.5">
+                    <Clock className="w-3 h-3 text-emerald-600" />
+                    Within {result.sla_target_hours || (result.urgency === 'CRITICAL' ? 12 : result.urgency === 'HIGH' ? 24 : 48)} Hours
                   </span>
-                )}
+                </div>
+                <div>
+                  <span className="text-charcoal-400 block font-medium">Location</span>
+                  <span className="font-semibold text-charcoal-800 truncate block mt-0.5">
+                    {result.address_text || (result.lat && result.lng ? `${Number(result.lat).toFixed(4)}, ${Number(result.lng).toFixed(4)}` : 'Location pinned')}
+                  </span>
+                </div>
               </div>
-              <p className="text-xs text-charcoal-400 font-mono">Ticket ID: {result.master_ticket_id}</p>
+
               {result.upvote_count > 1 && (
-                <p className="text-xs text-amber-700 font-semibold mt-1.5 flex items-center gap-1">
-                  👥 {result.upvote_count} citizens have reported this issue
+                <p className="text-xs text-amber-700 font-semibold mb-4 flex items-center gap-1">
+                  👥 {result.upvote_count} citizens have reported this physical defect (merged into this master ticket)
                 </p>
               )}
-              <button onClick={() => setResult(null)} className="btn-primary mt-5 text-sm shadow-sm">
-                Report Another Issue
-              </button>
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/citizen/track/${result.master_ticket_id}`)}
+                  className="btn-primary flex items-center gap-2 text-xs py-2 px-4 shadow-sm"
+                >
+                  Track This Ticket <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/citizen/history')}
+                  className="btn-secondary flex items-center gap-2 text-xs py-2 px-4 shadow-sm"
+                >
+                  View My Tickets
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReportAnother}
+                  className="text-xs text-charcoal-500 hover:text-charcoal-800 px-3 py-2"
+                >
+                  Report Another Issue
+                </button>
+
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* Form */}
-      {!result && (
-        <form onSubmit={handleSubmit} className="space-y-6">
+      <form id="report-issue-form" onSubmit={handleSubmit} className="space-y-6">
 
           {/* ── LOCATION SECTION: Problem Location ── */}
           <div className="bg-white rounded-2xl border border-ivory-300 shadow-card p-6 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center justify-between">
               <div>
-                <label className="text-xs text-charcoal-600 uppercase tracking-wider font-bold flex items-center gap-1.5">
-                  <MapPin className="w-3.5 h-3.5 text-civic-600" />
-                  Exact Problem Location
+                <label className="text-sm text-charcoal-900 font-bold flex items-center gap-1.5">
+                  <MapPin className="w-4 h-4 text-civic-600" />
+                  Problem Location
                   <span className="text-coral-600">*</span>
                 </label>
                 <p className="text-charcoal-500 text-xs mt-0.5">
-                  Mark where the defect actually is on the ground so officers dispatch to the right site and duplicate reports merge.
+                  Pinpoint where the defect exists so field officers resolve it at the right spot
                 </p>
               </div>
 
-              {/* Status Indicator */}
-              <div className="text-xs flex items-center gap-1.5 self-start sm:self-auto">
-                {reportingMode === 'elsewhere' || locationSource === 'manual' ? (
-                  <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-amber-600" /> Problem Site (Elsewhere)
-                  </span>
-                ) : (
-                  <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-civic-50 text-civic-800 border border-civic-200 flex items-center gap-1">
-                    <Navigation className="w-3 h-3 text-civic-600" /> At Incident Site (GPS)
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Reporting Mode Selector: At site vs elsewhere */}
-            <div className="grid grid-cols-2 gap-2 p-1 bg-ivory-100/80 rounded-xl border border-ivory-200">
-              <button
-                type="button"
-                onClick={() => {
-                  setReportingMode('at_site')
-                  if (gpsLat && gpsLng) {
+              {gpsLat && gpsLng && (
+                <button
+                  type="button"
+                  onClick={() => {
                     setPinLat(gpsLat)
                     setPinLng(gpsLng)
-                  }
-                  setLocationSource('gps')
-                }}
-                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-                  reportingMode === 'at_site'
-                    ? 'bg-white text-civic-800 shadow-sm border border-civic-200'
-                    : 'text-charcoal-500 hover:text-charcoal-800'
-                }`}
-              >
-                <Navigation className="w-3.5 h-3.5 text-civic-600" />
-                I am at the problem site
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setReportingMode('elsewhere')
-                  setLocationSource('manual')
-                }}
-                className={`py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-                  reportingMode === 'elsewhere'
-                    ? 'bg-white text-coral-800 shadow-sm border border-coral-200'
-                    : 'text-charcoal-500 hover:text-charcoal-800'
-                }`}
-              >
-                <MapPin className="w-3.5 h-3.5 text-coral-600" />
-                Reporting from elsewhere (home/office)
-              </button>
-            </div>
-
-            {/* Adaptive guidance based on reporting mode */}
-            {reportingMode === 'elsewhere' ? (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 flex items-start gap-2.5">
-                <span className="text-sm flex-shrink-0">📍</span>
-                <span className="leading-relaxed">
-                  <strong className="font-semibold text-amber-950">Reporting from home or another place?</strong> Search the landmark or street below (e.g. <em>"Akurdi Railway Station"</em> or <em>"FC Road"</em>) or drag the map pin to where the problem physically exists.
-                </span>
-              </div>
-            ) : (
-              <div className="bg-civic-50/60 border border-civic-200 rounded-xl p-3 text-xs text-civic-900 flex items-start gap-2.5">
-                <span className="text-sm flex-shrink-0">📍</span>
-                <span className="leading-relaxed">
-                  Using your current device coordinates for the problem site. If the issue is slightly further down the street, drag the pin or search the exact landmark.
-                </span>
-              </div>
-            )}
-
-            {/* Optional GPS reading badge for transparency */}
-            {gpsLat && gpsLng && !gpsError && (
-              <div className="flex items-center justify-between text-xs text-charcoal-500 px-1">
-                <span>Citizen device location: {gpsLat.toFixed(5)}, {gpsLng.toFixed(5)}</span>
-                {accuracy && <span>Accuracy: ±{Math.round(accuracy)}m</span>}
-              </div>
-            )}
-
-            {/* Map preview with draggable pin — always active and centered on problem pin */}
-            {(finalLat && finalLng) && (
-              <div className="rounded-xl overflow-hidden border border-ivory-300 relative shadow-sm" style={{ height: '240px' }}>
-                <MapContainer
-                  center={[finalLat, finalLng]}
-                  zoom={15}
-                  style={{ height: '100%', width: '100%' }}
-                  zoomControl={true}
-                  key={`${finalLat}-${finalLng}`}
+                    setPinTouched(true)
+                    setLocationSource('gps')
+                    setAddressQuery('')
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs text-civic-700 bg-civic-50 hover:bg-civic-100 border border-civic-200 px-2.5 py-1.5 rounded-lg font-medium transition-colors"
+                  title="Reset pin to current GPS location"
                 >
-                  <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  />
-                  <MapClickHandler enabled={true} onMapClick={handleMapClick} />
-                  <DraggablePin
-                    position={[finalLat, finalLng]}
-                    onDragEnd={handlePinDrag}
-                  />
-                </MapContainer>
-              </div>
+                  <Navigation className="w-3.5 h-3.5 text-civic-600" />
+                  Use Current GPS
+                </button>
+              )}
+            </div>
+
+            {/* Address search */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-charcoal-400 pointer-events-none" />
+              <input
+                type="text"
+                value={addressQuery}
+                onChange={(e) => handleAddressInput(e.target.value)}
+                placeholder="Search landmark or address (e.g. FC Road, Pune or Shivaji Nagar)"
+                className="w-full bg-ivory-50 border border-ivory-300 rounded-xl pl-9 pr-9 py-2.5 text-sm text-charcoal-900 placeholder:text-charcoal-400 focus:outline-none focus:ring-2 focus:ring-civic-500/20 focus:border-civic-500 focus:bg-white transition-all"
+              />
+              {addressSearching && (
+                <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-civic-600 animate-spin" />
+              )}
+              {addressQuery && !addressSearching && (
+                <button
+                  type="button"
+                  onClick={() => { setAddressQuery(''); setAddressError(null) }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-charcoal-400 hover:text-charcoal-600"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            {addressError && (
+              <p className="text-xs text-coral-600 font-medium">{addressError}</p>
             )}
 
-            {/* Address search — prominent and always accessible */}
-            <div className="space-y-1.5 pt-1">
-              <label className="text-xs text-charcoal-500 uppercase tracking-wider font-bold block">
-                Search address / landmark to move pin
-              </label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-charcoal-400 pointer-events-none" />
-                <input
-                  type="text"
-                  value={addressQuery}
-                  onChange={(e) => handleAddressInput(e.target.value)}
-                  placeholder="e.g. FC Road, Pune or MG Road or Shivaji Nagar"
-                  className="w-full bg-ivory-50 border border-ivory-300 rounded-xl pl-9 pr-9 py-2.5 text-sm text-charcoal-900 placeholder:text-charcoal-400 focus:outline-none focus:ring-2 focus:ring-civic-500/20 focus:border-civic-500 focus:bg-white transition-all"
-                />
-                {addressSearching && (
-                  <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-civic-600 animate-spin" />
-                )}
-                {addressQuery && !addressSearching && (
-                  <button
-                    type="button"
-                    onClick={() => { setAddressQuery(''); setAddressError(null) }}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-charcoal-400 hover:text-charcoal-600"
+            {/* Map preview with draggable pin */}
+            {(finalLat && finalLng) && (
+              <div className="rounded-xl overflow-hidden border border-ivory-300 relative shadow-sm" style={{ height: '220px' }}>
+                <ErrorBoundary
+                  fallback={() => (
+                    <div className="h-full w-full flex flex-col items-center justify-center bg-ivory-100 text-charcoal-500 text-xs p-4 text-center">
+                      <MapPin className="w-6 h-6 text-civic-500 mb-1" />
+                      <span>Map preview unavailable. Coordinates set to: {Number(finalLat).toFixed(4)}, {Number(finalLng).toFixed(4)}</span>
+                    </div>
+                  )}
+                >
+                  <MapContainer
+                    center={[finalLat, finalLng]}
+                    zoom={15}
+                    style={{ height: '100%', width: '100%' }}
+                    zoomControl={true}
                   >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
+                    <TileLayer
+                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+                    <MapCenterUpdater center={[finalLat, finalLng]} />
+                    <MapClickHandler enabled={true} onMapClick={handleMapClick} />
+                    <DraggablePin
+                      position={[finalLat, finalLng]}
+                      onDragEnd={handlePinDrag}
+                    />
+                  </MapContainer>
+                </ErrorBoundary>
               </div>
-              {addressError && (
-                <p className="text-xs text-coral-600 font-medium">{addressError}</p>
-              )}
-              <div className="flex items-center justify-between text-[11px] text-charcoal-400 px-0.5 pt-0.5">
-                <span>Click anywhere on the map or drag the pin directly</span>
-                <span className="font-mono">Pin: {finalLat ? finalLat.toFixed(5) : '—'}, {finalLng ? finalLng.toFixed(5) : '—'}</span>
-              </div>
-            </div>
+            )}
+            <p className="text-[11px] text-charcoal-400">
+              💡 Tip: Click anywhere on the map or drag the pin directly to set the exact position.
+            </p>
           </div>
 
           {/* ── DESCRIBE THE ISSUE ── */}
@@ -598,7 +691,83 @@ export default function ReportIssuePage() {
             )}
           </button>
         </form>
+
+      {/* ── RECENT TICKETS BY THIS CITIZEN / BROWSER ── */}
+      {recentTickets.length > 0 && (
+        <div className="mt-10 pt-8 border-t border-ivory-300 animate-slide-up">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-civic-50 border border-civic-200 flex items-center justify-center text-civic-700">
+                <Clock className="w-4 h-4" />
+              </div>
+              <h2 className="text-base font-bold text-charcoal-900">Your Recent Submissions</h2>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-civic-50 text-civic-700 font-semibold border border-civic-200">
+                {recentTickets.length}
+              </span>
+            </div>
+            <Link
+              to="/citizen/history"
+              className="text-xs font-semibold text-civic-700 hover:text-civic-800 flex items-center gap-1"
+            >
+              View My Tickets <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+
+          <div className="space-y-2.5">
+            {recentTickets.filter(Boolean).map((t, idx) => {
+              const ticketId = t?.id || `ticket-${idx}`
+              return (
+                <div
+                  key={ticketId}
+                  onClick={() => t?.id && navigate(`/citizen/track/${t.id}`)}
+                  className="p-3.5 rounded-xl bg-white border border-ivory-300 shadow-sm hover:shadow-card hover:border-civic-300 transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className="text-xs font-bold text-charcoal-900">{t?.category || 'Civic Issue'}</span>
+                      {t?.sub_category && (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-ivory-100 text-charcoal-600 border border-ivory-200">
+                          {t.sub_category}
+                        </span>
+                      )}
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
+                        t?.status === 'RESOLVED' || t?.status === 'CLOSED'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : t?.status === 'IN_PROGRESS' || t?.status === 'ASSIGNED'
+                          ? 'bg-blue-50 text-blue-700 border-blue-200'
+                          : 'bg-amber-50 text-amber-800 border-amber-200'
+                      }`}>
+                        {t?.status || 'OPEN'}
+                      </span>
+                      <span className="text-[10px] text-charcoal-400 font-mono">
+                        #{typeof t?.id === 'string' ? t.id.slice(0, 8) : '...'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-charcoal-600 line-clamp-1 leading-relaxed">
+                      {t?.description || 'Civic issue recorded'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0 self-end sm:self-auto">
+                    {t?.id && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          navigate(`/citizen/track/${t.id}`)
+                        }}
+                        className="btn-secondary text-xs px-3 py-1.5 flex items-center gap-1 group-hover:border-civic-400 font-medium"
+                      >
+                        Track Status <ArrowRight className="w-3 h-3 text-civic-600" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
       )}
     </div>
   )
 }
+

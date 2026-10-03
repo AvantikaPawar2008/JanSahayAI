@@ -30,6 +30,8 @@ from backend.services.vision_service import analyze_complaint_photo, compute_sha
 from backend.services.notification_service import send_citizen_notification
 from backend.services.priority_service import compute_priority_components, update_ticket_priority
 from backend.services.geo_service import reverse_geocode, resolve_incident_location
+from backend.services.event_service import record_ticket_event
+from backend.services.warranty_service import check_warranty_breach
 from backend.db.supabase_client import get_supabase_client
 from backend.models.schemas import IntakeResponse
 from datetime import datetime, timezone
@@ -53,15 +55,50 @@ async def submit_complaint(
     problem_landmark: Optional[str] = Form(default=None),
     device_lat: Optional[float] = Form(default=None),
     device_lng: Optional[float] = Form(default=None),
+    idempotency_key: Optional[str] = Form(default=None),
+    client_accuracy: Optional[float] = Form(default=None),
+    is_mock_location: Optional[bool] = Form(default=False),
     authorization: Optional[str] = Header(default=None),
 ):
     """
     Accepts a citizen complaint via text, audio, and/or photo with GPS.
     Distinguishes the citizen's device logging location from the real exact problem location.
 
-    Pipeline: transcribe → resolve real problem location → embed → triage → dedup → store → notify
+    Pipeline: idempotency check → transcribe → resolve location → embed → triage → dedup → store → notify
     """
     supabase = get_supabase_client()
+
+    # ----------------------------------------------------------------
+    # Step 0: Idempotency Early-Return Check
+    # ----------------------------------------------------------------
+    if idempotency_key:
+        try:
+            prior_report = (
+                supabase.table("ticket_reports")
+                .select("master_ticket_id")
+                .eq("idempotency_key", idempotency_key)
+                .limit(1)
+                .execute()
+            )
+            if prior_report.data and len(prior_report.data) > 0:
+                prior_m_id = prior_report.data[0]["master_ticket_id"]
+                prior_master = supabase.table("master_tickets").select("*").eq("id", prior_m_id).single().execute()
+                if prior_master.data:
+                    pm = prior_master.data
+                    logger.info(f"Idempotent submission detected for key {idempotency_key}. Returning master ticket {prior_m_id}.")
+                    return IntakeResponse(
+                        master_ticket_id=prior_m_id,
+                        is_duplicate=True,
+                        category=pm.get("category", "General"),
+                        sub_category=pm.get("sub_category"),
+                        department=pm.get("department"),
+                        urgency=pm.get("urgency"),
+                        message="Report already received and recorded (idempotent request).",
+                        upvote_count=pm.get("upvote_count", 1),
+                    )
+        except Exception as idemp_err:
+            logger.warning(f"Idempotency check query failed: {idemp_err}")
+
     complaint_text = text or ""
     transcript = None
     translated_text = None
@@ -72,7 +109,7 @@ async def submit_complaint(
     # ----------------------------------------------------------------
     # Step 1: Transcribe audio if provided
     # ----------------------------------------------------------------
-    if audio_file:
+    if audio_file and hasattr(audio_file, "read"):
         audio_bytes = await audio_file.read()
         if audio_bytes:
             try:
@@ -94,7 +131,7 @@ async def submit_complaint(
     # Step 2: Upload image to Supabase Storage concurrently if provided
     # ----------------------------------------------------------------
     image_upload_task = None
-    if image_file:
+    if image_file and hasattr(image_file, "read"):
         image_bytes = await image_file.read()
         if image_bytes:
             # Compute sharpness BEFORE upload so we have the bytes in-memory
@@ -157,6 +194,39 @@ async def submit_complaint(
     logging_lat = device_lat if device_lat is not None else lat
     logging_lng = device_lng if device_lng is not None else lng
 
+    # [TODO-IN-03] Vernacular normalization — run in background, non-blocking
+    # Normalizes Marathi/Hindi landmark names before embedding for better dedup accuracy
+    try:
+        from backend.services.dialect_service import normalize_complaint_text
+        dialect_result = await normalize_complaint_text(complaint_text, use_llm_fallback=False)
+        if dialect_result.get("normalized_text") and dialect_result["normalized_text"] != complaint_text:
+            logger.info(
+                f"🔤 Dialect normalization: {dialect_result['gazetteer_hits']} hits, "
+                f"normalized '{complaint_text[:40]}' → '{dialect_result['normalized_text'][:40]}'"
+            )
+            complaint_text = dialect_result["normalized_text"]
+    except Exception as dialect_err:
+        logger.debug(f"Dialect normalization skipped: {dialect_err}")
+
+    # [TODO-DD-01] Warranty breach check — runs after triage classification
+    # Checks if new defect falls within 25m of a RESOLVED ticket still under 60-day warranty
+    warranty_breach_info = None
+    try:
+        warranty_breach_info = await check_warranty_breach(
+            lat=real_lat,
+            lng=real_lng,
+            department=triage_result.department,
+            sub_category=triage_result.sub_category,
+            citizen_id=None,  # Will be resolved below in citizen lookup
+        )
+        if warranty_breach_info and warranty_breach_info.get("is_warranty_breach"):
+            logger.warning(
+                f"⚠️ WARRANTY BREACH: contractor {warranty_breach_info.get('contractor_id')} "
+                f"— original ticket {warranty_breach_info.get('original_ticket_id')}"
+            )
+    except Exception as warranty_err:
+        logger.debug(f"Warranty check skipped: {warranty_err}")
+
     # Look up or create citizen record for tracking and citizen history (RLS compatibility)
     citizen_id = None
     auth_user_id = None
@@ -207,6 +277,7 @@ async def submit_complaint(
         device_lat=logging_lat,
         device_lng=logging_lng,
         location_source=final_location_source,
+        client_accuracy=client_accuracy,
     )
 
     if duplicate:
@@ -259,6 +330,17 @@ async def submit_complaint(
             except Exception as re_err:
                 logger.error(f"Failed to handle pending ticket {master_ticket_id}: {re_err}")
 
+        # Update provenance & last_seen_at on master ticket
+        try:
+            supabase.table("master_tickets").update({
+                "dedup_similarity_score": duplicate.get("similarity_score"),
+                "dedup_threshold_zone": duplicate.get("threshold_zone"),
+                "dedup_laya_decision": duplicate.get("laya_decision"),
+                "last_seen_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", master_ticket_id).execute()
+        except Exception as prov_err:
+            logger.debug(f"Could not update provenance on master ticket {master_ticket_id}: {prov_err}")
+
         # Insert the citizen's report linked to the existing master ticket.
         # With Migration 007, sync_ticket_upvote_count trigger automatically syncs master_tickets.upvote_count.
         report_data = {
@@ -270,6 +352,9 @@ async def submit_complaint(
             "text_embedding": text_embedding,
             "lat": logging_lat,
             "lng": logging_lng,
+            **({"idempotency_key": idempotency_key} if idempotency_key else {}),
+            **({"client_accuracy": client_accuracy} if client_accuracy is not None else {}),
+            **({"is_mock_location": is_mock_location} if is_mock_location is not None else {}),
             **({"citizen_id": citizen_id} if citizen_id else {}),
             **({"image_sharpness_score": image_sharpness_score} if image_sharpness_score is not None else {}),
         }
@@ -308,8 +393,28 @@ async def submit_complaint(
             except Exception as e:
                 logger.error(f"Failed to update priority for ticket {master_ticket_id}: {e}")
 
+        # Record immutable audit event for merge
+        record_ticket_event(
+            ticket_id=master_ticket_id,
+            event_type="MERGED_AS_UPVOTE",
+            actor_id=citizen_id,
+            actor_role="citizen" if citizen_id else "anonymous",
+            metadata={
+                "similarity_score": duplicate.get("similarity_score"),
+                "threshold_zone": duplicate.get("threshold_zone"),
+                "laya_decision": duplicate.get("laya_decision"),
+                "upvote_count": new_upvote_count,
+                "already_reported": already_reported,
+                "client_accuracy": client_accuracy,
+                "is_mock_location": is_mock_location,
+            },
+        )
+
         logger.info(f"Duplicate complaint merged into master ticket {master_ticket_id} "
                     f"(dept={triage_result.department}, sub_cat={triage_result.sub_category})")
+
+        dup_urg = (duplicate.get("urgency") or "MEDIUM").upper()
+        dup_sla = 12.0 if dup_urg == "CRITICAL" else (24.0 if dup_urg == "HIGH" else (72.0 if dup_urg == "LOW" else 48.0))
 
         return IntakeResponse(
             master_ticket_id=master_ticket_id,
@@ -318,6 +423,12 @@ async def submit_complaint(
             sub_category=duplicate.get("sub_category"),
             department=duplicate.get("department"),
             urgency=duplicate.get("urgency"),
+            status=duplicate.get("status", "OPEN"),
+            sla_target_hours=dup_sla,
+            expected_resolution_hours=dup_sla,
+            lat=duplicate.get("lat") or resolved_lat,
+            lng=duplicate.get("lng") or resolved_lng,
+            address_text=duplicate.get("address_text") or address_str,
             message=(
                 f"Your report has been added to an existing ticket. "
                 f"{new_upvote_count} citizens have reported this issue."
@@ -375,6 +486,17 @@ async def submit_complaint(
         "needs_admin_review": triage_result.needs_admin_review,
         "text_embedding": text_embedding,
     }
+
+    # Automatically allot ticket to the least-burdened field officer in the department
+    try:
+        from backend.services.officer_service import allot_officer_for_ticket
+        allotted_officer = allot_officer_for_ticket(triage_result.department)
+        if allotted_officer and allotted_officer.get("id"):
+            master_ticket_data["assigned_officer_id"] = allotted_officer["id"]
+            master_ticket_data["status"] = "ASSIGNED"
+            logger.info("Automatically allotted new complaint to officer %s (%s)", allotted_officer.get("name"), triage_result.department)
+    except Exception as off_err:
+        logger.debug("Officer auto-allotment skipped: %s", off_err)
 
     # Gracefully add sub_category if the column exists in the database
     if triage_result.sub_category:
@@ -434,6 +556,9 @@ async def submit_complaint(
         "text_embedding": text_embedding,
         "lat": logging_lat,
         "lng": logging_lng,
+        **({"idempotency_key": idempotency_key} if idempotency_key else {}),
+        **({"client_accuracy": client_accuracy} if client_accuracy is not None else {}),
+        **({"is_mock_location": is_mock_location} if is_mock_location is not None else {}),
         **({"citizen_id": citizen_id} if citizen_id else {}),
         **({"image_sharpness_score": image_sharpness_score} if image_sharpness_score is not None else {}),
     }
@@ -447,6 +572,24 @@ async def submit_complaint(
     except Exception:
         res = supabase.table("ticket_reports").insert(report_data).execute()
         inserted_report = res.data[0] if res.data else None
+
+    # Record immutable audit event for creation
+    record_ticket_event(
+        ticket_id=master_ticket_id,
+        event_type="CREATED",
+        actor_id=citizen_id,
+        actor_role="citizen" if citizen_id else "anonymous",
+        metadata={
+            "category": triage_result.category,
+            "sub_category": triage_result.sub_category,
+            "department": triage_result.department,
+            "urgency": triage_result.urgency,
+            "priority_score": init_priority["priority_score"],
+            "needs_admin_review": triage_result.needs_admin_review,
+            "client_accuracy": client_accuracy,
+            "is_mock_location": is_mock_location,
+        },
+    )
 
     # Step 7b: Before-photo auto-assignment — first citizen image on a new ticket
     # automatically becomes the 'before' photo so officers always have context.
@@ -475,6 +618,9 @@ async def submit_complaint(
         f"Address: {address_str}"
     )
 
+    new_urg = (triage_result.urgency or "MEDIUM").upper()
+    new_sla = 12.0 if new_urg == "CRITICAL" else (24.0 if new_urg == "HIGH" else (72.0 if new_urg == "LOW" else 48.0))
+
     return IntakeResponse(
         master_ticket_id=master_ticket_id,
         is_duplicate=False,
@@ -482,6 +628,11 @@ async def submit_complaint(
         sub_category=triage_result.sub_category,
         department=triage_result.department,
         urgency=triage_result.urgency,
+        status="OPEN",
+        sla_target_hours=new_sla,
+        expected_resolution_hours=new_sla,
+        lat=resolved_lat,
+        lng=resolved_lng,
         message=default_sms,
         upvote_count=1,
         address_text=address_str,

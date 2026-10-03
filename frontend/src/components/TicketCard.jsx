@@ -1,6 +1,7 @@
 import { MapPin, Clock, Users, ChevronRight, AlertTriangle } from 'lucide-react'
 import UrgencyBadge from './UrgencyBadge'
 import PriorityBreakdown from './PriorityBreakdown'
+import SlaBadge from './SlaBadge'
 
 /**
  * TicketCard — clean civic-tech card with urgency badge, location in words, and metadata.
@@ -75,9 +76,23 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
                 {ticket.upvote_count} citizens reported
               </span>
             )}
+            {Date.now() - new Date(ticket.created_at).getTime() < 86400000 && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1 animate-pulse">
+                ⚡ NEW
+              </span>
+            )}
             {ticket.needs_admin_review && (
               <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-coral-50 text-coral-700 border border-coral-200 flex items-center gap-1">
                 <AlertTriangle className="w-3 h-3 text-coral-600" /> Needs classification review
+              </span>
+            )}
+            {ticket.assigned_officer_name ? (
+              <span className="text-[10px] px-2 py-0.5 rounded-md font-medium bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1" title={`Allotted to officer: ${ticket.assigned_officer_name}`}>
+                👷 {ticket.assigned_officer_name}
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">
+                ⚠️ Unallotted
               </span>
             )}
           </div>
@@ -87,11 +102,16 @@ export default function TicketCard({ ticket, onClick, showPriority = false }) {
           </h3>
 
           {/* Prominent Human-Readable Address in Words */}
-          <div className="flex items-center gap-1.5 text-xs text-civic-800 font-medium mb-2.5 bg-civic-50 px-2.5 py-1.5 rounded-lg border border-civic-100">
+          <div className="flex items-center gap-1.5 text-xs text-civic-800 font-medium mb-2 bg-civic-50 px-2.5 py-1.5 rounded-lg border border-civic-100">
             <MapPin className="w-3.5 h-3.5 text-civic-600 flex-shrink-0" />
             <span className="truncate" title={ticket.address_text || (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(5)}, ${ticket.lng.toFixed(5)}` : 'Location')}>
               {ticket.address_text || (ticket.lat && ticket.lng ? `${ticket.lat.toFixed(4)}, ${ticket.lng.toFixed(4)}` : 'Location Pending')}
             </span>
+          </div>
+
+          {/* Municipal SLA & Escalation Indicator */}
+          <div className="mb-2.5">
+            <SlaBadge ticket={ticket} showProgressBar={true} />
           </div>
 
           <p className="text-xs text-charcoal-500 line-clamp-2 mb-3 leading-relaxed">

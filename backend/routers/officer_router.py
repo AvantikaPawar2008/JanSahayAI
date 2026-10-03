@@ -4,13 +4,17 @@ import uuid
 import logging
 from datetime import datetime, timezone
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Header, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Header, BackgroundTasks, Body
 from typing import Optional
 
 from backend.db.supabase_client import get_supabase_client, get_supabase_user_client
 from backend.utils.auth_cache import resolve_user_from_token
-from backend.services.priority_service import compute_priority_components, recalculate_department_priorities
-from backend.models.schemas import OfficerQueueItem, ProofSubmissionResponse
+from backend.services.priority_service import (
+    compute_priority_components,
+    recalculate_department_priorities,
+    compute_ticket_sla,
+)
+from backend.models.schemas import OfficerQueueItem, ProofSubmissionResponse, AllotTicketRequest
 
 logger = logging.getLogger("civicpulse.officer")
 router = APIRouter(prefix="/api/officer", tags=["Officer"])
@@ -23,6 +27,7 @@ def get_officer_queue(
     department: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     urgency: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
     sort: str = Query(default="priority_score_desc"),
     limit: int = Query(default=50, le=200),
     authorization: Optional[str] = Header(default=None),
@@ -44,10 +49,12 @@ def get_officer_queue(
     user_dept = None
     if authorization:
         _, role, user_dept = resolve_user_from_token(authorization)
-        if role == "officer" and user_dept:
+        if department and department.upper() == "ALL":
+            officer_dept = None
+        elif role == "officer" and user_dept:
             officer_dept = department if department else user_dept
         elif role == "admin":
-            officer_dept = department
+            officer_dept = None if department and department.upper() == "ALL" else department
 
     # Recalculate priority scores in background so queue load is instant
     background_tasks.add_task(recalculate_department_priorities, department=officer_dept, limit=limit)
@@ -56,8 +63,13 @@ def get_officer_queue(
     query = supabase.table("master_tickets").select("*")
 
     # Filter by department (PostgreSQL RLS also enforces this)
-    if officer_dept:
+    if officer_dept and officer_dept.upper() != "ALL":
         query = query.eq("department", officer_dept)
+
+    # Search filter across description, category, address, or ticket ID
+    if search and search.strip():
+        term = search.strip()
+        query = query.or_(f"description.ilike.%{term}%,category.ilike.%{term}%,address_text.ilike.%{term}%,id.ilike.%{term}%")
 
     # Filter by status (AND logic)
     if status and status.upper() != "ALL":
@@ -88,6 +100,14 @@ def get_officer_queue(
 
     queue_items = []
 
+    # Map officer IDs to names for rich queue display
+    try:
+        from backend.services.officer_service import get_all_officers
+        officers_list = get_all_officers()
+        officer_name_map = {o["id"]: o["name"] for o in officers_list}
+    except Exception:
+        officer_name_map = {}
+
     for t in (result.data or []):
         sla_comp = t.get("priority_sla_component")
         urg_comp = t.get("priority_urgency_component")
@@ -104,6 +124,15 @@ def get_officer_queue(
             urg_comp = comps["priority_urgency_component"]
             dup_comp = comps["priority_duplicate_component"]
             score = comps["priority_score"]
+
+        sla_info = compute_ticket_sla(
+            created_at=t.get("created_at"),
+            urgency=t.get("urgency", "MEDIUM"),
+            status=t.get("status", "OPEN"),
+            resolved_at=t.get("resolved_at"),
+        )
+        is_esc = bool(t.get("needs_admin_review")) or sla_info["is_escalated"]
+        off_id = t.get("assigned_officer_id")
 
         queue_items.append(
             OfficerQueueItem(
@@ -125,7 +154,16 @@ def get_officer_queue(
                 priority_duplicate_component=float(dup_comp) if dup_comp is not None else None,
                 sop_steps=t.get("sop_steps"),
                 tools_required=t.get("tools_required"),
+                assigned_officer_id=off_id,
+                assigned_officer_name=officer_name_map.get(off_id),
                 needs_admin_review=bool(t.get("needs_admin_review", False)),
+                sla_target_hours=sla_info["sla_target_hours"],
+                sla_elapsed_hours=sla_info["sla_elapsed_hours"],
+                sla_remaining_hours=sla_info["sla_remaining_hours"],
+                sla_status=sla_info["sla_status"],
+                sla_progress_percent=sla_info["sla_progress_percent"],
+                is_escalated=is_esc,
+                escalation_level=sla_info["escalation_level"] if is_esc else None,
             )
         )
 
@@ -264,3 +302,122 @@ async def submit_proof_of_work(
         photo_type=photo_type,
         message=f"{photo_type.title()} photo uploaded successfully",
     )
+
+
+# ============================================================
+# OFFICER ALLOTMENT & PUBLIC ACCOUNTABILITY / SHAME SYSTEM
+# ============================================================
+
+@router.get("/list")
+def list_officers(
+    department: Optional[str] = Query(default=None),
+):
+    """
+    Returns registered municipal officers with their current pending workload.
+    Can be filtered by department.
+    """
+    from backend.services.officer_service import get_all_officers
+    supabase = get_supabase_client()
+
+    officers = get_all_officers(department=department)
+
+    # Compute current active tickets per officer
+    active_assigned = (
+        supabase.table("master_tickets")
+        .select("assigned_officer_id")
+        .not_.is_("assigned_officer_id", "null")
+        .in_("status", ["OPEN", "ASSIGNED", "IN_PROGRESS", "REOPENED"])
+        .execute()
+        .data or []
+    )
+    from collections import defaultdict
+    counts = defaultdict(int)
+    for a in active_assigned:
+        counts[a["assigned_officer_id"]] += 1
+
+    result = []
+    for o in officers:
+        result.append({
+            "id": o["id"],
+            "name": o["name"],
+            "department": o.get("department"),
+            "phone_number": o.get("phone_number"),
+            "current_pending_count": counts.get(o["id"], 0),
+        })
+
+    return result
+
+
+@router.post("/allot")
+def allot_ticket(
+    req: AllotTicketRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Allots a ticket to a field officer:
+    - If auto_allot_all=True: Auto-balances and allots all unassigned active tickets.
+    - If ticket_id and officer_id are provided: Assigns the specific ticket to the chosen officer.
+    - If ticket_id is provided without officer_id: Auto-picks the least-burdened officer for that department.
+    """
+    from backend.services.officer_service import (
+        assign_ticket_to_officer,
+        allot_officer_for_ticket,
+        auto_allot_unassigned_tickets,
+    )
+    supabase = get_supabase_client()
+
+    actor_id = None
+    if authorization:
+        try:
+            token_str = authorization.replace("Bearer ", "").strip()
+            user_res = supabase.auth.get_user(token_str)
+            if user_res and user_res.user:
+                actor_id = str(user_res.user.id)
+        except Exception:
+            pass
+
+    # Batch auto-allot all unassigned
+    if req.auto_allot_all:
+        count = auto_allot_unassigned_tickets()
+        return {
+            "success": True,
+            "message": f"Successfully auto-allotted {count} tickets across department officers",
+            "allotted_count": count,
+        }
+
+    if not req.ticket_id:
+        raise HTTPException(status_code=400, detail="ticket_id is required when auto_allot_all is False")
+
+    # Specific ticket allotment
+    t_res = supabase.table("master_tickets").select("id, department").eq("id", req.ticket_id).single().execute()
+    if not t_res.data:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    target_officer_id = req.officer_id
+    if not target_officer_id:
+        # Auto-pick least burdened officer for this ticket's department
+        chosen = allot_officer_for_ticket(t_res.data.get("department", "Roads & Infrastructure"))
+        if not chosen:
+            raise HTTPException(status_code=400, detail="No officer available in this department")
+        target_officer_id = chosen["id"]
+
+    result = assign_ticket_to_officer(
+        ticket_id=req.ticket_id,
+        officer_id=target_officer_id,
+        actor_id=actor_id,
+    )
+    return {
+        "success": True,
+        "message": f"Ticket allotted to officer {result.get('officer_name')}",
+        "allotment": result,
+    }
+
+
+@router.get("/shame-board")
+def get_shame_leaderboard():
+    """
+    Returns public municipal department and officer accountability & backlog statistics.
+    Exposes solved vs pending counts, SLA breach rates, and shame ratings.
+    """
+    from backend.services.officer_service import get_public_shame_leaderboard
+    return get_public_shame_leaderboard()

@@ -15,10 +15,78 @@ import numpy as np
 import cv2
 
 from backend.utils.groq_client import get_groq_client
-from backend.utils.prompts import VISION_TRIAGE_PROMPT, BEFORE_AFTER_PROMPT
+from backend.utils.prompts import VISION_TRIAGE_PROMPT, BEFORE_AFTER_PROMPT, VISION_RUBRIC_PROMPT
 from backend.config import get_settings
 
 logger = logging.getLogger("civicpulse.vision")
+
+ACTIVE_VISION_MODEL = "qwen/qwen3.8-27b"
+
+
+def _clean_and_parse_json(raw: str) -> dict:
+    """
+    Robustly parses JSON from LLM output, handling markdown code fences,
+    trailing commas, or explanatory text surrounding the JSON block.
+    """
+    if not raw or not isinstance(raw, str):
+        raise ValueError("Empty or non-string response from vision model")
+
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    # Extract outermost JSON object if surrounding text remains
+    if "{" in text and "}" in text:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        text = text[start:end]
+
+    return json.loads(text)
+
+
+def _call_groq_vision(messages: list, temperature: float = 0.1, max_tokens: int = 512) -> str:
+    """
+    Executes a Groq vision chat completion with automatic model validation and fallback.
+    If the configured model is decommissioned or errors, automatically falls back to
+    ACTIVE_VISION_MODEL ('qwen/qwen3.8-27b').
+    """
+    client = get_groq_client()
+    settings = get_settings()
+    model_name = settings.groq_vision_model or ACTIVE_VISION_MODEL
+
+    # Intercept decommissioned models (e.g., llama-3.2-11b-vision-preview)
+    if any(bad in model_name.lower() for bad in ["llama-3.2", "11b-vision", "90b-vision"]):
+        model_name = ACTIVE_VISION_MODEL
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content
+    except Exception as exc:
+        err_msg = str(exc).lower()
+        if "decommissioned" in err_msg or "not found" in err_msg or model_name != ACTIVE_VISION_MODEL:
+            logger.warning(
+                f"Groq vision model '{model_name}' failed ({exc}). Retrying with active model '{ACTIVE_VISION_MODEL}'..."
+            )
+            response = client.chat.completions.create(
+                model=ACTIVE_VISION_MODEL,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            )
+            return response.choices[0].message.content
+        raise
 
 
 # ============================================================
@@ -60,12 +128,8 @@ async def analyze_complaint_photo(image_url: str) -> dict:
     Returns:
         dict with description, category, urgency, department
     """
-    client = get_groq_client()
-    settings = get_settings()
-
-    response = client.chat.completions.create(
-        model=settings.groq_vision_model,
-        messages=[
+    try:
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -76,17 +140,19 @@ async def analyze_complaint_photo(image_url: str) -> dict:
                     },
                 ],
             }
-        ],
-        temperature=0.1,
-        max_tokens=512,
-    )
-
-    raw = response.choices[0].message.content
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
+        ]
+        raw = _call_groq_vision(messages=messages, temperature=0.1, max_tokens=512)
+        parsed = _clean_and_parse_json(raw)
         return {
-            "description": raw,
+            "description": parsed.get("description") or "Civic issue reported via photo",
+            "category": parsed.get("category") or "Unknown",
+            "urgency": parsed.get("urgency") or "MEDIUM",
+            "department": parsed.get("department") or "Roads & Infrastructure",
+        }
+    except Exception as exc:
+        logger.error(f"analyze_complaint_photo failed: {exc}")
+        return {
+            "description": "Civic issue reported via photo",
             "category": "Unknown",
             "urgency": "MEDIUM",
             "department": "Roads & Infrastructure",
@@ -108,12 +174,8 @@ async def compare_before_after(before_url: str, after_url: str) -> dict:
     Returns:
         dict with same_location, defect_resolved, repair_quality, confidence, notes
     """
-    client = get_groq_client()
-    settings = get_settings()
-
-    response = client.chat.completions.create(
-        model=settings.groq_vision_model,
-        messages=[
+    try:
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -128,24 +190,25 @@ async def compare_before_after(before_url: str, after_url: str) -> dict:
                     },
                 ],
             }
-        ],
-        temperature=0.1,
-        max_tokens=512,
-    )
-
-    raw = response.choices[0].message.content
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        result = {
+        ]
+        raw = _call_groq_vision(messages=messages, temperature=0.1, max_tokens=512)
+        parsed = _clean_and_parse_json(raw)
+        return {
+            "same_location": bool(parsed.get("same_location", False)),
+            "defect_resolved": bool(parsed.get("defect_resolved", False)),
+            "repair_quality": parsed.get("repair_quality", "POOR"),
+            "confidence": float(parsed.get("confidence", 0.0)),
+            "notes": parsed.get("notes", ""),
+        }
+    except Exception as exc:
+        logger.error(f"compare_before_after failed: {exc}")
+        return {
             "same_location": False,
             "defect_resolved": False,
             "repair_quality": "POOR",
             "confidence": 0.0,
-            "notes": f"Failed to parse vision model response: {raw[:200]}",
+            "notes": f"Vision comparison error: {str(exc)}",
         }
-
-    return result
 
 
 # ============================================================
@@ -256,26 +319,8 @@ async def verify_repair_photo(master_ticket: dict, after_photo_url: str) -> dict
         ]
 
     try:
-        response = client.chat.completions.create(
-            model=settings.groq_vision_model,
-            messages=[{"role": "user", "content": content}],
-            temperature=0.1,
-            max_tokens=512,
-        )
-        raw = response.choices[0].message.content
-        try:
-            vlm_result = json.loads(raw)
-        except json.JSONDecodeError:
-            # Parse PASS/FAIL from raw text if JSON fails
-            verdict_text = raw.upper()
-            passed = "PASS" in verdict_text and "FAIL" not in verdict_text.replace("PASS", "")
-            vlm_result = {
-                "defect_resolved": passed,
-                "verdict": "PASS" if passed else "FAIL",
-                "repair_quality": "UNKNOWN",
-                "confidence": 0.5 if passed else 0.0,
-                "notes": raw[:300],
-            }
+        raw = _call_groq_vision(messages=[{"role": "user", "content": content}], temperature=0.1, max_tokens=512)
+        vlm_result = _clean_and_parse_json(raw)
     except Exception as exc:
         logger.error(f"verify_repair_photo VLM call failed: {exc}")
         vlm_result = {
@@ -320,3 +365,118 @@ async def verify_repair_photo(master_ticket: dict, after_photo_url: str) -> dict
         "confidence": float(vlm_result.get("confidence", 0.0)),
         "needs_supervisor_review": needs_supervisor_review,
     }
+
+
+# ============================================================
+# [TODO-VF-03] MULTI-CRITERIA SCORED RUBRIC VERIFICATION
+# ============================================================
+
+RUBRIC_PASS_THRESHOLD = 12   # 12-15 = auto-PASS
+RUBRIC_FAIL_THRESHOLD = 7    # 0-7 = auto-FAIL, 8-11 = BORDERLINE (supervisor review)
+
+
+async def verify_repair_photo_rubric(master_ticket: dict, after_photo_url: str) -> dict:
+    """
+    [TODO-VF-03] Multi-criteria scored rubric verification for repair photos.
+
+    Evaluates three axes scored 0-5 each (max 15):
+    - site_match: Are photos of the same location?
+    - defect_resolved: Is the defect genuinely resolved?
+    - repair_quality: Is the workmanship acceptable?
+
+    Decision logic:
+    - 12-15: PASS (auto-approve)
+    - 8-11: BORDERLINE (route to human supervisor review)
+    - 0-7: FAIL (reject, reopen ticket)
+    """
+    client = get_groq_client()
+    settings = get_settings()
+
+    sub_category = master_ticket.get("sub_category") or "civic issue"
+    description = master_ticket.get("description") or "No description provided"
+    urgency = master_ticket.get("urgency", "MEDIUM")
+    has_before = bool(master_ticket.get("has_before_photo", False))
+
+    before_photo_url = None
+    if has_before:
+        try:
+            from backend.db.supabase_client import get_supabase_client
+            supabase = get_supabase_client()
+            before_res = (
+                supabase.table("verification_photos")
+                .select("image_url")
+                .eq("master_ticket_id", master_ticket["id"])
+                .eq("photo_type", "before")
+                .order("captured_at", desc=False)
+                .limit(1)
+                .execute()
+            )
+            if before_res.data:
+                before_photo_url = before_res.data[0]["image_url"]
+        except Exception as exc:
+            logger.warning("Could not fetch before photo for rubric verification: %s", exc)
+
+    prompt = VISION_RUBRIC_PROMPT.format(
+        sub_category=sub_category,
+        description=description[:300],
+        urgency=urgency,
+    )
+
+    content = [{"type": "text", "text": prompt}]
+    if before_photo_url:
+        content.append({"type": "image_url", "image_url": {"url": before_photo_url}})
+    content.append({"type": "image_url", "image_url": {"url": after_photo_url}})
+
+    try:
+        raw = _call_groq_vision(messages=[{"role": "user", "content": content}], temperature=0.05, max_tokens=512)
+        rubric = _clean_and_parse_json(raw)
+    except Exception as exc:
+        logger.error("Rubric VLM call failed: %s", exc)
+        rubric = {
+            "site_match": 0,
+            "defect_resolved": 0,
+            "repair_quality": 0,
+            "total_score": 0,
+            "verdict": "FAIL",
+            "notes": f"VLM error: {str(exc)}",
+            "confidence": 0.0,
+        }
+
+    site_match = int(rubric.get("site_match", 0))
+    defect_resolved = int(rubric.get("defect_resolved", 0))
+    repair_quality = int(rubric.get("repair_quality", 0))
+    total_score = site_match + defect_resolved + repair_quality
+
+    if total_score >= RUBRIC_PASS_THRESHOLD:
+        verdict = "PASS"
+        passed = True
+    elif total_score <= RUBRIC_FAIL_THRESHOLD:
+        verdict = "FAIL"
+        passed = False
+    else:
+        verdict = "BORDERLINE"
+        passed = False
+
+    needs_supervisor_review = (verdict == "BORDERLINE") or (urgency == "CRITICAL" and verdict == "PASS")
+
+    if needs_supervisor_review:
+        logger.warning(
+            "RUBRIC BORDERLINE/CRITICAL: ticket=%s total=%d/15 site=%d resolved=%d quality=%d - flagged for supervisor review",
+            master_ticket.get("id"), total_score, site_match, defect_resolved, repair_quality,
+        )
+
+    return {
+        "passed": passed,
+        "verdict": verdict,
+        "total_score": total_score,
+        "site_match": site_match,
+        "defect_resolved": defect_resolved,
+        "repair_quality": repair_quality,
+        "notes": rubric.get("notes", ""),
+        "confidence": float(rubric.get("confidence", 0.0)),
+        "needs_supervisor_review": needs_supervisor_review,
+        "verification_method": "rubric_scored" + ("_before_after" if before_photo_url else "_single_photo"),
+        "pass_threshold": RUBRIC_PASS_THRESHOLD,
+        "fail_threshold": RUBRIC_FAIL_THRESHOLD,
+    }
+

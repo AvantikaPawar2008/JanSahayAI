@@ -49,13 +49,14 @@ async def find_duplicate(
     device_lat: Optional[float] = None,
     device_lng: Optional[float] = None,
     location_source: Optional[str] = None,
+    client_accuracy: Optional[float] = None,
 ) -> dict | None:
     """
     Checks for duplicate master tickets near the given location with the same
     department, sub_category, and similar text.
 
     Three-stage pipeline:
-      Stage 1 — spatial: PostGIS ST_DWithin within radius_meters
+      Stage 1 — spatial: PostGIS ST_DWithin within dynamic radius_meters (scaled by GPS accuracy)
       Stage 2 — hard filter: department must match; sub_category must match if both sides have it
       Stage 3 — three-zone semantic decision:
                  - >= 0.90: Confident duplicate, merge immediately (no Laya call)
@@ -71,6 +72,7 @@ async def find_duplicate(
         image_embedding: Optional image embedding (for blended similarity scoring)
         radius_meters: Spatial search radius (default DEDUP_RADIUS_METERS)
         new_report_text: Raw or translated text of incoming report for Laya comparison
+        client_accuracy: Reported device GPS accuracy in meters (used to expand search window)
 
     Returns:
         dict with master_ticket data if duplicate found, None otherwise
@@ -80,6 +82,11 @@ async def find_duplicate(
 
     high_thresh = getattr(settings, "dedup_high_confidence_threshold", DEDUP_HIGH_CONFIDENCE_THRESHOLD)
     low_thresh = getattr(settings, "dedup_low_confidence_threshold", DEDUP_LOW_CONFIDENCE_THRESHOLD)
+
+    # Dynamic GPS-accuracy radius scaling: expand up to +50m in dense/canyon areas
+    effective_radius = radius_meters
+    if client_accuracy and client_accuracy > 0:
+        effective_radius = min(250.0, radius_meters + min(50.0, float(client_accuracy)))
 
     # Linear infrastructure sub-categories that can span longer distances
     LINEAR_SUBCATEGORIES = {
@@ -101,19 +108,19 @@ async def find_duplicate(
         rpc_params = {
             "search_lat": lat,
             "search_lng": lng,
-            "radius_m": radius_meters,
+            "radius_m": effective_radius,
             "search_department": department,
             "search_sub_category": sub_category,
         }
         nearby_query = supabase.rpc("find_nearby_tickets", rpc_params).execute()
         candidates = nearby_query.data or []
 
-        # Dynamic spatial expansion: if no candidates in 100m, allow linear defects to search up to 200m
-        if not candidates and sub_category in LINEAR_SUBCATEGORIES and radius_meters <= DEDUP_RADIUS_METERS:
+        # Dynamic spatial expansion: if no candidates in radius, allow linear defects to search up to 200m
+        if not candidates and sub_category in LINEAR_SUBCATEGORIES and effective_radius <= DEDUP_RADIUS_METERS:
             expanded_params = {
                 "search_lat": lat,
                 "search_lng": lng,
-                "radius_m": radius_meters * 2.0,  # 200m
+                "radius_m": effective_radius * 2.0,  # 200m
                 "search_department": department,
                 "search_sub_category": sub_category,
             }
@@ -249,6 +256,25 @@ async def find_duplicate(
                 )
                 continue
 
+            # [TODO-DD-03] Road-network barrier check: block merges across physical barriers
+            # (railway tracks, flyovers, rivers) even if Haversine distance is within radius.
+            # Only run for candidates within dedup radius (saves OSRM calls for far candidates).
+            if problem_dist <= effective_radius * 1.5 and problem_dist > 30:
+                try:
+                    from backend.services.road_network_service import check_road_barrier
+                    import asyncio
+                    barrier_detected = await check_road_barrier(
+                        lat, lng, cand_lat, cand_lng, problem_dist
+                    )
+                    if barrier_detected:
+                        logger.info(
+                            f"🚧 Road barrier detected for candidate {ticket_id} "
+                            f"(haversine={problem_dist:.0f}m) — skipping merge"
+                        )
+                        continue
+                except Exception as road_err:
+                    logger.debug(f"Road barrier check skipped: {road_err}")
+
         stored_embeddings_list = candidate_embeddings_map.get(ticket_id, [])
         if not stored_embeddings_list:
             continue
@@ -269,6 +295,8 @@ async def find_duplicate(
                 "Skipping Laya confirmation."
             )
             ticket["similarity_score"] = final_similarity
+            ticket["threshold_zone"] = "HIGH_CONFIDENCE_AUTO_MERGE"
+            ticket["laya_decision"] = "SKIPPED_AUTO_MERGE"
             ticket["laya_evaluated"] = False
             return ticket
 
@@ -300,6 +328,8 @@ async def find_duplicate(
                     f"(p_true={laya_result.get('confidence', 0.0):.4f} >= threshold)"
                 )
                 ticket["similarity_score"] = final_similarity
+                ticket["threshold_zone"] = "AMBIGUOUS_ZONE"
+                ticket["laya_decision"] = "CONFIRMED_BY_LAYA"
                 ticket["laya_evaluated"] = True
                 ticket["laya_confirmed"] = True
                 ticket["laya_confidence"] = laya_result.get("confidence")
@@ -315,6 +345,8 @@ async def find_duplicate(
             threshold = getattr(settings, "dedup_similarity_threshold", 0.80)
             if final_similarity >= threshold:
                 ticket["similarity_score"] = final_similarity
+                ticket["threshold_zone"] = "THRESHOLD_FALLBACK"
+                ticket["laya_decision"] = "THRESHOLD_FALLBACK"
                 return ticket
 
     return None

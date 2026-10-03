@@ -207,29 +207,58 @@ async def async_enrich_master_ticket_sop(
     category: str,
     lat: float,
     lng: float,
+    sub_category: str = "",
 ):
     """
     Background worker task to asynchronously generate and update custom field SOPs in master_tickets.
     Runs non-blocking so the citizen receives their intake response in <100ms.
+
+    [TODO-TR-02] Uses RAG-grounded SOP generation with Indian municipal rulebook citations.
+    Falls back to original LLM-only generation if RAG fails.
     """
     try:
         from backend.db.supabase_client import get_supabase_client
-        logger.info(f"🔄 Background generating SOP for master ticket {master_ticket_id}...")
-        enriched = generate_sop_and_sms(
-            complaint_text=complaint_text,
-            department=department,
-            urgency=urgency,
-            category=category,
-            lat=lat,
-            lng=lng,
-        )
+        logger.info(f"Background generating RAG SOP for master ticket {master_ticket_id}...")
+
+        enriched = None
+        rag_chunks_used = 0
+        try:
+            from backend.services.rag_sop_service import generate_rag_sop
+            enriched = await generate_rag_sop(
+                complaint_text=complaint_text,
+                department=department,
+                urgency=urgency,
+                sub_category=sub_category or category,
+                lat=lat,
+                lng=lng,
+            )
+            rag_chunks_used = enriched.get("rag_chunks_used", 0)
+        except Exception as rag_err:
+            logger.warning(f"RAG SOP generation failed ({rag_err}), falling back to standard LLM")
+
+        if not enriched:
+            enriched = generate_sop_and_sms(
+                complaint_text=complaint_text,
+                department=department,
+                urgency=urgency,
+                category=category,
+                lat=lat,
+                lng=lng,
+            )
+
         supabase = get_supabase_client()
-        supabase.table("master_tickets").update({
+        update_data = {
             "sop_steps": enriched["sop_steps"],
             "tools_required": enriched["tools_required"],
             "citizen_sms_draft": enriched["citizen_sms_draft"],
-        }).eq("id", master_ticket_id).execute()
-        logger.info(f"✅ Background SOP updated successfully for master ticket {master_ticket_id}.")
+        }
+        if enriched.get("regulatory_citations"):
+            update_data["sop_regulatory_citations"] = enriched["regulatory_citations"]
+        if rag_chunks_used:
+            update_data["sop_rag_chunks_used"] = rag_chunks_used
+
+        supabase.table("master_tickets").update(update_data).eq("id", master_ticket_id).execute()
+        logger.info(f"RAG SOP updated for master ticket {master_ticket_id} (rag_chunks={rag_chunks_used})")
     except Exception as e:
         logger.error(f"Failed to update background SOP for master ticket {master_ticket_id}: {e}")
 
